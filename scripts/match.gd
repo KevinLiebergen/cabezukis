@@ -38,15 +38,21 @@ var _effects: Dictionary = {}  # clave -> {time, node}
 var _hud: CanvasLayer
 var _score_label: Label
 var _time_label: Label
-var _p1_powerup_buttons: Array[Button] = []
-var _p2_powerup_labels: Array[Label] = []
-## Power-up del humano ya usado y todavía surtiendo efecto, por hueco (índice
-## igual al de _p1_powerup_buttons): null si ese hueco no tiene nada activo
-## ahora mismo. Independiente de held_powerups (que solo guarda lo NO usado
-## aún): al tocar el botón, el tipo se quita de held_powerups pero se guarda
-## aquí con su duración para poder dibujar la cuenta atrás en el propio
-## botón hasta que el efecto expira (ver _draw_powerup_clock).
-var _p1_active_powerup: Array = [null, null]
+## Botones/insignias del HUD: siempre relativos a "quién soy yo" en este
+## peer, no a p1/p2 fijos -en online cualquiera de los dos puede ser el
+## humano local de cada cliente-, ver _my_head()/_rival_head().
+var _my_powerup_buttons: Array[Button] = []
+var _rival_powerup_labels: Array[Label] = []
+## Power-ups ya usados y todavía surtiendo efecto, por lado ("p1"/"p2") y
+## hueco (índice igual al de _my_powerup_buttons cuando el lado es el mío):
+## null si ese hueco no tiene nada activo ahora mismo. Independiente de
+## held_powerups (que solo guarda lo NO usado aún): al activarse un hueco, el
+## tipo se quita de held_powerups pero se guarda aquí con su duración para
+## poder dibujar la cuenta atrás en el propio botón (ver _draw_powerup_clock).
+## Se trackean los dos lados (no solo "el mío") porque en el servidor de una
+## partida online la activación de cualquiera de los dos jugadores pasa por
+## aquí; cada cliente solo dibuja el reloj de su propio lado.
+var _active_powerup: Dictionary = {"p1": [null, null], "p2": [null, null]}
 var _announce_label: Label
 var _announce_time := 0.0
 var _center_label: Label
@@ -145,10 +151,7 @@ func _ready() -> void:
 	_pause_audio = AudioStreamPlayer.new()
 	add_child(_pause_audio)
 
-	# Sin power-ups en el modo online todavía (fase 2 del netcode: primero el
-	# partido en sí, los power-ups sincronizados llegan después).
-	if not Net.is_online():
-		_grant_powerups()
+	_grant_powerups()
 	_countdown_kickoff()
 
 # ---------------- Construcción ----------------
@@ -344,6 +347,21 @@ func _head_for_sender() -> Head:
 		return p2_head
 	return null
 
+## Cabezudo del humano que ve ESTE peer: en local siempre p1 (como hasta
+## ahora); en online, el lado que el servidor le asignó a este cliente
+## (Net.my_side()) -en el propio servidor (dedicado, sin lado) no se usa,
+## solo lo consulta cada cliente para pintar su propia HUD.
+func _my_head() -> Head:
+	if Net.is_online() and Net.my_side() == "p2":
+		return p2_head
+	return p1_head
+
+func _rival_head() -> Head:
+	return p2_head if _my_head() == p1_head else p1_head
+
+func _my_side_key() -> String:
+	return "p1" if _my_head() == p1_head else "p2"
+
 @rpc("any_peer", "call_remote", "unreliable_ordered")
 func rpc_move_input(dir: float, jump: bool) -> void:
 	var head := _head_for_sender()
@@ -434,12 +452,14 @@ func _build_hud() -> void:
 	_pause_btn.pressed.connect(_request_pause)
 	_hud.add_child(_pause_btn)
 
-	# Power-ups del jugador humano: cada hueco ES el botón (icono del
-	# power-up que le tocó, tocarlo lo activa directamente), en pequeño y
-	# arriba a la DERECHA -no del mismo tamaño que los controles táctiles:
-	# ahí abajo son la acción principal y necesitan ser grandes, aquí son un
-	# extra ocasional-, para poder tocarlos con el pulgar derecho (el mismo
-	# que ya maneja disparo/salto) sin soltar el movimiento con el izquierdo.
+	# Power-ups del jugador humano (el mío en este peer: p1 en local siempre,
+	# en online el lado que me haya asignado el servidor, ver _my_head()):
+	# cada hueco ES el botón (icono del power-up que le tocó, tocarlo lo
+	# activa directamente), en pequeño y arriba a la DERECHA -no del mismo
+	# tamaño que los controles táctiles: ahí abajo son la acción principal y
+	# necesitan ser grandes, aquí son un extra ocasional-, para poder
+	# tocarlos con el pulgar derecho (el mismo que ya maneja disparo/salto)
+	# sin soltar el movimiento con el izquierdo.
 	const POWERUP_BTN_SIZE := 110.0
 	const POWERUP_BTN_MARGIN := 12.0
 	const POWERUP_BTN_GAP := 10.0
@@ -455,19 +475,20 @@ func _build_hud() -> void:
 		btn.focus_mode = Control.FOCUS_NONE
 		btn.add_theme_font_size_override("font_size", 56)
 		var idx := i
-		btn.pressed.connect(func(): _activate_powerup_slot(p1_head, idx))
+		btn.pressed.connect(func(): _request_activate_powerup_slot(idx))
 		btn.draw.connect(func(): _draw_powerup_clock(btn, idx))
 		_hud.add_child(btn)
-		_p1_powerup_buttons.append(btn)
+		_my_powerup_buttons.append(btn)
 
-	# Los del rival (CPU) son solo informativos, en pequeño arriba a la
-	# izquierda (debajo del botón Menú): la IA se los gasta sola, no hace
-	# falta que sean tocables ni que compitan por sitio con los del humano.
+	# Los del rival (la IA en local, el otro jugador humano en online) son
+	# solo informativos, en pequeño arriba a la izquierda (debajo del botón
+	# Menú): no hace falta que sean tocables ni que compitan por sitio con
+	# los del humano local.
 	for i in 2:
 		var l2 := _make_powerup_badge()
 		l2.position = Vector2(12 + i * 58, 66)
 		_hud.add_child(l2)
-		_p2_powerup_labels.append(l2)
+		_rival_powerup_labels.append(l2)
 
 	_update_score_hud()
 	_update_powerup_hud()
@@ -516,7 +537,7 @@ func _style_powerup_button(btn: Button, color: Color, filled: bool) -> void:
 ## barre en sentido horario desde las 12 hasta tapar el círculo entero
 ## cuando el efecto expira, para que se lea de un vistazo cuánto queda.
 func _draw_powerup_clock(btn: Button, idx: int) -> void:
-	var active = _p1_active_powerup[idx]
+	var active = _active_powerup[_my_side_key()][idx]
 	if active == null:
 		return
 	var frac := 1.0 - clampf(active.time_left / active.duration, 0.0, 1.0)
@@ -539,9 +560,11 @@ func _draw_powerup_clock(btn: Button, idx: int) -> void:
 			Color(1, 1, 1, 0.75), 2.0)
 
 func _update_powerup_hud() -> void:
-	for i in _p1_powerup_buttons.size():
-		var btn: Button = _p1_powerup_buttons[i]
-		var active = _p1_active_powerup[i]
+	var my_head := _my_head()
+	var my_active: Array = _active_powerup[_my_side_key()]
+	for i in _my_powerup_buttons.size():
+		var btn: Button = _my_powerup_buttons[i]
+		var active = my_active[i]
 		if active != null:
 			# Ya usado y todavía activo: se ve igual que "guardado" (mismo
 			# icono/color) pero sin poder volver a tocarlo, con la cuenta
@@ -549,8 +572,8 @@ func _update_powerup_hud() -> void:
 			btn.text = Powerup.LABELS[active.type]
 			btn.disabled = true
 			_style_powerup_button(btn, Powerup.COLORS[active.type], true)
-		elif i < p1_head.held_powerups.size() and p1_head.held_powerups[i] != -1:
-			var type: int = p1_head.held_powerups[i]
+		elif i < my_head.held_powerups.size() and my_head.held_powerups[i] != -1:
+			var type: int = my_head.held_powerups[i]
 			btn.text = Powerup.LABELS[type]
 			btn.disabled = false
 			_style_powerup_button(btn, Powerup.COLORS[type], true)
@@ -559,7 +582,7 @@ func _update_powerup_hud() -> void:
 			btn.disabled = true
 			_style_powerup_button(btn, Color(1, 1, 1, 0.25), false)
 		btn.queue_redraw()
-	_fill_powerup_badges(_p2_powerup_labels, p2_head.held_powerups)
+	_fill_powerup_badges(_rival_powerup_labels, _rival_head().held_powerups)
 
 func _fill_powerup_badges(labels: Array[Label], held: Array) -> void:
 	for i in labels.size():
@@ -709,6 +732,8 @@ func _send_local_input() -> void:
 	rpc_id(1, "rpc_move_input", dir, wants_jump)
 	if wants_kick:
 		rpc_id(1, "rpc_kick_input", wants_jump or touch_high)
+	if Input.is_action_just_pressed("use_powerup"):
+		rpc_id(1, "rpc_request_activate_powerup_oldest")
 
 func _process(delta: float) -> void:
 	# El servidor suspende _ready() en un await mientras espera a que los dos
@@ -735,10 +760,35 @@ func _process(delta: float) -> void:
 	if not sudden_death:
 		time_left = maxf(0.0, time_left - delta)
 	_update_time_hud()
+	# Caducidad de efectos: corre igual en todos los peers, mismo motivo que
+	# el reloj de arriba -la activación (ver _apply_activate_powerup_slot) ya
+	# replicó tipo y duración a todos, así que cada peer puede contar la
+	# cuenta atrás y expirar el efecto por su cuenta sin esperar un RPC de
+	# "ya expiró" del servidor.
+	for key in _effects.keys().duplicate():
+		_effects[key].time -= delta
+		if _effects[key].time <= 0.0:
+			_expire_effect(key)
+	# Cuenta atrás de los power-ups ya usados por cualquiera de los dos
+	# lados (ver _draw_powerup_clock): cuando se agota, el hueco vuelve a
+	# quedar vacío. Solo se redibuja el botón si el lado es el mío en este
+	# peer -el rival no tiene reloj visual, solo se le ve el tipo (badge)-.
+	for side in _active_powerup.keys():
+		var arr: Array = _active_powerup[side]
+		for i in arr.size():
+			var active = arr[i]
+			if active == null:
+				continue
+			active.time_left -= delta
+			if active.time_left <= 0.0:
+				arr[i] = null
+				_update_powerup_hud()
+			if side == _my_side_key():
+				_my_powerup_buttons[i].queue_redraw()
 	# A partir de aquí, solo decisiones: quién gana el saque de medio tiempo,
-	# cuándo se acaba el tiempo, caducidad de efectos... eso lo decide
-	# únicamente el servidor (u offline, el propio proceso local); el cliente
-	# se entera de todo por RPC, nunca lo calcula por su cuenta.
+	# cuándo se acaba el tiempo... eso lo decide únicamente el servidor (u
+	# offline, el propio proceso local); el cliente se entera de todo por
+	# RPC, nunca lo calcula por su cuenta.
 	if Net.is_online() and not Net.is_server():
 		return
 	if not sudden_death:
@@ -747,22 +797,6 @@ func _process(delta: float) -> void:
 			return
 		if time_left <= 0.0:
 			_on_time_up()
-	# Caducidad de efectos
-	for key in _effects.keys().duplicate():
-		_effects[key].time -= delta
-		if _effects[key].time <= 0.0:
-			_expire_effect(key)
-	# Cuenta atrás dibujada en los power-ups del humano ya usados (ver
-	# _draw_powerup_clock): cuando se agota, el hueco vuelve a quedar vacío.
-	for i in _p1_active_powerup.size():
-		var active = _p1_active_powerup[i]
-		if active == null:
-			continue
-		active.time_left -= delta
-		if active.time_left <= 0.0:
-			_p1_active_powerup[i] = null
-			_update_powerup_hud()
-		_p1_powerup_buttons[i].queue_redraw()
 
 # ---------------- Goles y final ----------------
 
@@ -977,8 +1011,7 @@ func _apply_second_half() -> void:
 	# de reafirmarlo tras reposicionarlo con _reset_ball.
 	if not (Net.is_online() and not Net.is_server()):
 		ball.freeze = false
-	if not Net.is_online():
-		_grant_powerups()
+	_grant_powerups()
 	_apply_countdown_kickoff("¡SEGUNDA PARTE!\n¡Cambio de campo!")
 
 func _swap_sides() -> void:
@@ -1173,14 +1206,36 @@ const POWERUPS_PER_HALF := 2
 ## sorteo de mano). El humano decide cuándo usarlos con el botón de
 ## power-up; la IA no tiene criterio para elegir el momento, así que se los
 ## gasta sola en algún punto aleatorio de ese tiempo.
+## Función de decisión (patrón igual que _countdown_kickoff/_start_halftime/
+## etc.): solo corre en el servidor o en local offline, nunca en un cliente
+## online -el sorteo usa randi(), si cada peer lo hiciera por su cuenta cada
+## uno acabaría con tipos distintos-. Sortea y replica el resultado real vía
+## _apply_grant_powerups.
 func _grant_powerups() -> void:
-	for head in [p1_head, p2_head]:
-		head.held_powerups.clear()
-		for i in POWERUPS_PER_HALF:
-			head.held_powerups.append(Powerup.Type.values()[randi() % Powerup.Type.size()])
-		if head.is_cpu:
-			_schedule_cpu_powerups(head)
-	_p1_active_powerup = [null, null]
+	if Net.is_online() and not Net.is_server():
+		return
+	var p1_types := _roll_powerup_types()
+	var p2_types := _roll_powerup_types()
+	if Net.is_online():
+		rpc("_apply_grant_powerups", p1_types, p2_types)
+	else:
+		_apply_grant_powerups(p1_types, p2_types)
+
+func _roll_powerup_types() -> Array:
+	var types := []
+	for i in POWERUPS_PER_HALF:
+		types.append(Powerup.Type.values()[randi() % Powerup.Type.size()])
+	return types
+
+@rpc("authority", "call_local", "reliable")
+func _apply_grant_powerups(p1_types: Array, p2_types: Array) -> void:
+	p1_head.held_powerups = p1_types
+	p2_head.held_powerups = p2_types
+	if p1_head.is_cpu:
+		_schedule_cpu_powerups(p1_head)
+	if p2_head.is_cpu:
+		_schedule_cpu_powerups(p2_head)
+	_active_powerup = {"p1": [null, null], "p2": [null, null]}
 	_update_powerup_hud()
 
 func _schedule_cpu_powerups(head: Head) -> void:
@@ -1194,11 +1249,13 @@ func _schedule_cpu_powerups(head: Head) -> void:
 
 ## Usa el power-up más antiguo que el cabezudo tiene guardado (si tiene
 ## alguno): lo usa la IA (nunca elige hueco concreto) y también el atajo de
-## teclado "usar power-up" del humano (tampoco elige hueco, coge el primero
-## disponible). El humano tocando directamente un botón concreto pasa por
-## _activate_powerup_slot con el índice de ESE hueco.
+## teclado "usar power-up" del humano local offline (tampoco elige hueco,
+## coge el primero disponible; en online ese atajo pasa por
+## rpc_request_activate_powerup_oldest más abajo, no por aquí). El humano
+## tocando directamente un botón concreto pasa por _activate_powerup_slot
+## con el índice de ESE hueco.
 func activate_powerup(head: Head) -> void:
-	if head == p1_head:
+	if not head.is_cpu:
 		for i in head.held_powerups.size():
 			if head.held_powerups[i] != -1:
 				_activate_powerup_slot(head, i)
@@ -1210,13 +1267,28 @@ func activate_powerup(head: Head) -> void:
 	var rival := p2_head if head == p1_head else p1_head
 	_apply_powerup_effect(type, head, rival)
 
-## Activa el power-up de un hueco concreto. Solo lo usa el humano (el hueco
+## Activa el power-up de un hueco concreto: valida y decide (patrón igual
+## que el resto del archivo -ver _apply_goal etc.-), replicando vía
+## _apply_activate_powerup_slot en online. Solo lo usa el humano (el hueco
 ## solo tiene sentido para sus dos botones tocables): en vez de quitarlo de
 ## held_powerups (que desplazaría el resto y desalinearía los botones fijos),
 ## lo marca con -1 ("ya usado, hueco vacío hasta el próximo tiempo") y guarda
-## su tipo/duración en _p1_active_powerup para dibujar la cuenta atrás en el
+## su tipo/duración en _active_powerup para dibujar la cuenta atrás en el
 ## propio botón (ver _draw_powerup_clock) hasta que el efecto expira.
 func _activate_powerup_slot(head: Head, idx: int) -> void:
+	if idx < 0 or idx >= head.held_powerups.size():
+		return
+	if head.held_powerups[idx] == -1:
+		return
+	var side := "p1" if head == p1_head else "p2"
+	if Net.is_online():
+		rpc("_apply_activate_powerup_slot", side, idx)
+	else:
+		_apply_activate_powerup_slot(side, idx)
+
+@rpc("authority", "call_local", "reliable")
+func _apply_activate_powerup_slot(side: String, idx: int) -> void:
+	var head := p1_head if side == "p1" else p2_head
 	if idx < 0 or idx >= head.held_powerups.size():
 		return
 	var type: int = head.held_powerups[idx]
@@ -1224,9 +1296,39 @@ func _activate_powerup_slot(head: Head, idx: int) -> void:
 		return
 	head.held_powerups[idx] = -1
 	var dur := _powerup_duration(type)
-	_p1_active_powerup[idx] = {"type": type, "duration": dur, "time_left": dur}
+	_active_powerup[side][idx] = {"type": type, "duration": dur, "time_left": dur}
 	_update_powerup_hud()
 	_apply_powerup_effect(type, head, p2_head if head == p1_head else p1_head)
+
+## Pulsación del botón propio de la HUD: en online quien decide de verdad es
+## el servidor (ver _activate_powerup_slot), así que el cliente solo pide
+## permiso por RPC; offline se aplica directo, igual que siempre.
+func _request_activate_powerup_slot(idx: int) -> void:
+	if Net.is_online():
+		rpc_id(1, "rpc_request_activate_powerup_slot", idx)
+	else:
+		_activate_powerup_slot(_my_head(), idx)
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_activate_powerup_slot(idx: int) -> void:
+	var head := _head_for_sender()
+	if head != null:
+		_activate_powerup_slot(head, idx)
+
+## Atajo de teclado "usar power-up" de un cliente online, enviado desde
+## _send_local_input: el camino de head.gd (wants_use, activate_powerup)
+## nunca se ejecuta ahí porque el cliente tiene la física de las cabezas
+## desactivada (ver _setup_online_actors), así que hay que capturarlo aparte
+## y pedírselo al servidor igual que el resto del input online.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_request_activate_powerup_oldest() -> void:
+	var head := _head_for_sender()
+	if head == null:
+		return
+	for i in head.held_powerups.size():
+		if head.held_powerups[i] != -1:
+			_activate_powerup_slot(head, i)
+			return
 
 func _powerup_duration(type: Powerup.Type) -> float:
 	return FREEZE_DURATION if type == Powerup.Type.FREEZE else POWERUP_DURATION
@@ -1262,6 +1364,11 @@ func _apply_powerup_effect(type: Powerup.Type, who: Head, rival: Head) -> void:
 			_announce("¡Turbo para %s!" % who.player_data.name)
 		Powerup.Type.FREEZE:
 			rival.frozen = true
+			# El tinte lo fija aquí (no en Head._physics_process) porque en
+			# un cliente online las cabezas no corren su propio
+			# _physics_process (ver _setup_online_actors): esta función sí
+			# llega a todos los peers vía _apply_activate_powerup_slot.
+			rival.modulate = rival.tint * Color(0.6, 0.8, 1.4)
 			_set_effect("freeze", FREEZE_DURATION, rival)
 			_announce("¡%s congelado!" % rival.player_data.name)
 		Powerup.Type.SUPER_KICK:
@@ -1303,6 +1410,7 @@ func _expire_effect(key: String) -> void:
 		"freeze":
 			if node != null:
 				node.frozen = false
+				node.modulate = node.tint
 		"super_kick":
 			kick_mult = 1.0
 		"goal_enlarge_left":

@@ -205,9 +205,13 @@ func _physics_process(delta: float) -> void:
 	# teclado, donde mantener salto + chutar es lo que da el disparo
 	# elevado).
 	var touch_high := false
-	if frozen:
-		modulate = tint * Color(0.6, 0.8, 1.4)
-	else:
+	# El tinte de congelado (activo/reset) lo fija match.gd en el momento de
+	# la transición (ver _apply_powerup_effect/_expire_effect), replicado vía
+	# RPC a todos los peers: en un cliente online esta función nunca corre
+	# para las cabezas remotas (set_physics_process(false), ver
+	# match.gd _setup_online_actors), así que fijarlo aquí cada frame nunca
+	# llegaría a pintarse ahí. Aquí solo queda anular el input mientras dura.
+	if not frozen:
 		modulate = tint
 		if is_cpu:
 			_cpu_think(delta)
