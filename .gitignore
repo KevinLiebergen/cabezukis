@@ -1,0 +1,12 @@
+# Caché y datos de importación de Godot (se regeneran solos)
+.godot/
+
+# APK exportado (se regenera con el comando de export, ver README/CLAUDE.md)
+build/
+
+# Ajustes locales de Claude Code (rutas y permisos de esta máquina)
+.claude/settings.local.json
+
+# Basura del sistema
+.DS_Store
+Thumbs.db

@@ -1,0 +1,44 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="Cabezukis"
+run/main_scene="res://scenes/bootstrap.tscn"
+config/features=PackedStringArray("4.7")
+config/icon="res://icon.png"
+
+[autoload]
+
+GameState="*res://scripts/game_state.gd"
+PlayerDB="*res://scripts/player_db.gd"
+FieldDB="*res://scripts/field_db.gd"
+Net="*res://scripts/net.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/handheld/orientation=4
+
+[gui]
+
+theme/custom_font="res://fonts/LilitaOne-Regular.ttf"
+
+[physics]
+
+2d/default_gravity=1500.0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
