@@ -6,9 +6,22 @@ extends Node2D
 
 const W := 1280.0
 const H := 720.0
-const FLOOR_Y := 640.0
-const GOAL_W := 100.0     # profundidad de la portería desde la pared (igual de ancha)
-const CROSSBAR_Y := 405.0 # altura del larguero (misma anchura, ~1.8x más alta)
+## Porterías/personajes/pelota al 80% de su tamaño original (ver Head.RADIUS,
+## Ball.BASE_RADIUS) y suelo de juego subido un poco (antes 640): deja hueco
+## libre abajo en pantalla para agrandar los controles táctiles (ver
+## match.gd BTN_SIZE) sin que se monten sobre la jugada. Debe mantenerse en
+## sincronía con las mismas constantes en match.gd. El fondo (cielo/gradas/
+## pared) NO usa esta constante -ver BACKDROP_WALL_BOTTOM- para que "el
+## escenario" en sí no cambie de tamaño con el campo.
+const FLOOR_Y := 600.0
+const GOAL_W := 150.0      # antes 100: acerca las porterías entre sí
+const CROSSBAR_Y := 414.4  # antes 405: (FLOOR_Y + SUBMERGE) - (altura original * 0.8)
+## Borde inferior fijo de la pared del fondo en _draw_day/_draw_night (el
+## FLOOR_Y de siempre, antes de encoger el campo): así "el escenario" -cielo,
+## gradas, pared- se sigue dibujando exactamente igual que antes aunque el
+## suelo de juego (FLOOR_Y) haya subido; el césped, ahora más alto, tapa sin
+## problema el trozo de pared que queda por debajo.
+const BACKDROP_WALL_BOTTOM := 640.0
 ## Cuánto se hunde la base de la portería por debajo de la línea de suelo,
 ## para simular perspectiva/3D falso (como si el larguero se "clavara" en
 ## el campo en vez de quedar justo al ras del hitbox).
@@ -20,6 +33,11 @@ var field: Dictionary = {}
 ## arriba (larguero más alto), no hacia abajo.
 var goal_scale_left := 1.0
 var goal_scale_right := 1.0
+## Sacudida corta de la portería al chocar el balón contra el larguero (ver
+## match.gd _on_ball_touched_post): un desplazamiento pequeño que decae a
+## cero enseguida, releído por _draw_goal cada vez que se redibuja.
+var goal_shake_left := Vector2.ZERO
+var goal_shake_right := Vector2.ZERO
 
 func setup(f: Dictionary) -> void:
 	field = f
@@ -30,6 +48,30 @@ func set_goal_scale(left: bool, factor: float) -> void:
 		goal_scale_left = factor
 	else:
 		goal_scale_right = factor
+	queue_redraw()
+
+## Muy corta y reactiva a propósito (unos 0.2s en total): tiene que notarse
+## el golpe del balón contra el larguero sin quedar un temblor largo o
+## mareante. Para que se sienta natural (como un muelle que se va parando)
+## en vez de un vaivén siempre igual, la primera mitad del tiempo tiembla
+## rápido y a tope de amplitud, y la segunda mitad va más lenta y con la
+## amplitud cada vez más pequeña hasta pararse del todo.
+func shake_goal(left: bool) -> void:
+	var tw := create_tween()
+	var amt := 18.0
+	for i in 4:
+		var off := Vector2(randf_range(-amt, amt), randf_range(-amt * 0.5, amt * 0.5))
+		tw.tween_method(_set_goal_shake.bind(left), Vector2.ZERO, off, 0.02)
+	for f: float in [0.55, 0.28]:
+		var off: Vector2 = Vector2(randf_range(-amt, amt), randf_range(-amt * 0.5, amt * 0.5)) * f
+		tw.tween_method(_set_goal_shake.bind(left), Vector2.ZERO, off, 0.05)
+	tw.tween_method(_set_goal_shake.bind(left), Vector2.ZERO, Vector2.ZERO, 0.03)
+
+func _set_goal_shake(v: Vector2, left: bool) -> void:
+	if left:
+		goal_shake_left = v
+	else:
+		goal_shake_right = v
 	queue_redraw()
 
 func _draw() -> void:
@@ -65,9 +107,9 @@ func _draw_day() -> void:
 		draw_circle(c + Vector2(-28, 10), 22, Color(1, 1, 1, 0.9))
 	_draw_stands(false)
 	# Pared del estadio tras el campo
-	draw_rect(Rect2(0, 444, W, FLOOR_Y - 444), Color(0.42, 0.58, 0.66))
+	draw_rect(Rect2(0, 444, W, BACKDROP_WALL_BOTTOM - 444), Color(0.42, 0.58, 0.66))
 	for i in 16:
-		draw_rect(Rect2(i * 80.0, 444, 40, FLOOR_Y - 444), Color(0.46, 0.62, 0.7))
+		draw_rect(Rect2(i * 80.0, 444, 40, BACKDROP_WALL_BOTTOM - 444), Color(0.46, 0.62, 0.7))
 
 func _draw_night() -> void:
 	# Cielo nocturno
@@ -84,9 +126,9 @@ func _draw_night() -> void:
 	draw_circle(Vector2(1085, 80), 32, Color(0.05, 0.06, 0.16))
 	_draw_stands(true)
 	# Pared oscura
-	draw_rect(Rect2(0, 444, W, FLOOR_Y - 444), Color(0.16, 0.2, 0.28))
+	draw_rect(Rect2(0, 444, W, BACKDROP_WALL_BOTTOM - 444), Color(0.16, 0.2, 0.28))
 	for i in 16:
-		draw_rect(Rect2(i * 80.0, 444, 40, FLOOR_Y - 444), Color(0.19, 0.23, 0.31))
+		draw_rect(Rect2(i * 80.0, 444, 40, BACKDROP_WALL_BOTTOM - 444), Color(0.19, 0.23, 0.31))
 	# Torres de focos con conos de luz
 	for tx in [180.0, 1100.0]:
 		draw_rect(Rect2(tx - 6, 120, 12, 220), Color(0.3, 0.32, 0.36))
@@ -144,6 +186,31 @@ func _draw_pitch(night: bool, draw_grass: bool = true) -> void:
 			draw_rect(Rect2(i * 160.0, FLOOR_Y + 10, 80, H - FLOOR_Y), stripe)
 	_draw_goal(true, night)
 	_draw_goal(false, night)
+
+## Profundidad (ancho en pantalla) de la portería, siempre al tamaño base -no
+## crece con el power-up de agrandar, ver _draw_goal-: match.gd la usa para
+## colocar una barrera física invisible justo en el fondo de la red (mismo
+## cálculo que dst_w en _draw_goal/goal_front.gd _draw_post), para que los
+## personajes no puedan caminar más allá y "salirse por detrás" de la
+## portería. Único punto de cálculo para no repetir la relación de aspecto de
+## la imagen en tres sitios.
+static func goal_depth() -> float:
+	var tex := _goal_back_texture()
+	var ts := tex.get_size()
+	var base_gh := (FLOOR_Y + SUBMERGE) - CROSSBAR_Y
+	return ts.x * (base_gh / ts.y)
+
+## Fracción del ancho de la portería (0 = fondo, contra la pared; 1 = poste
+## cercano) donde queda el borde de la malla del fondo, medido a mano sobre
+## goals/porteria_back.png (958x1400) buscando el primer píxel opaco por fila
+## de izquierda a derecha: a la altura del larguero (fila ~220-250) el borde
+## está en x≈390-435 (frac≈0.41-0.45); a la altura del suelo (fila ~1200-1300)
+## en x≈8-24 (frac≈0.01-0.03). La red no es una pared vertical, se hunde hacia
+## atrás según baja -match.gd usa estos dos puntos para levantar una barrera
+## diagonal (no vertical) en el fondo de la portería, en vez de una línea recta
+## que no seguía la forma real de la red y dejaba huecos al saltar.
+const NET_BACK_FRAC_TOP := 0.43
+const NET_BACK_FRAC_FLOOR := 0.02
 
 ## Portería con foto real (poste cercano + red en perspectiva). El poste
 ## cercano queda en x = GOAL_W (izquierda) o x = W - GOAL_W (derecha), justo
@@ -214,27 +281,31 @@ static func compute_actor_tint(f: Dictionary, night: bool) -> Color:
 
 func _draw_goal(left: bool, night: bool = false) -> void:
 	var tex := _goal_back_texture()
-	var ts := tex.get_size()
 	var floor_bottom := FLOOR_Y + SUBMERGE
 	var factor := goal_scale_left if left else goal_scale_right
 	var gh := (floor_bottom - CROSSBAR_Y) * factor
-	var scale := gh / ts.y
-	var dst_w := ts.x * scale
+	# El ancho SIEMPRE se calcula con el tamaño base (no con "factor"): al
+	# agrandar la portería (power-up), antes crecía también hacia atrás
+	# (el fondo de la red se alejaba cada vez más, dando sensación de que
+	# la portería entera se desplazaba); ahora solo crece hacia arriba
+	# (más alta), sin moverse ni ensancharse.
+	var dst_w := goal_depth()
 	var top_y := floor_bottom - gh
 	# El poste queda siempre en el borde derecho de la imagen fuente.
 	var near_x := GOAL_W if left else W - GOAL_W
 	var tint := compute_tint(field, night)
+	var shake := goal_shake_left if left else goal_shake_right
 
 	# Sombra de contacto en la base del poste cercano: ancla la portería al
 	# suelo del escenario en vez de dejarla flotando encima.
-	draw_set_transform(Vector2(near_x, floor_bottom), 0.0, Vector2(1, 0.35))
+	draw_set_transform(Vector2(near_x, floor_bottom) + shake, 0.0, Vector2(1, 0.35))
 	draw_circle(Vector2.ZERO, 16, Color(0, 0, 0, 0.28))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	if left:
-		draw_texture_rect(tex, Rect2(near_x - dst_w, top_y, dst_w, gh), false, tint)
+		draw_texture_rect(tex, Rect2(near_x - dst_w + shake.x, top_y + shake.y, dst_w, gh), false, tint)
 	else:
 		# Portería derecha: espejo horizontal.
-		draw_set_transform(Vector2(near_x + dst_w, top_y), 0.0, Vector2(-1, 1))
+		draw_set_transform(Vector2(near_x + dst_w, top_y) + shake, 0.0, Vector2(-1, 1))
 		draw_texture_rect(tex, Rect2(0, 0, dst_w, gh), false, tint)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

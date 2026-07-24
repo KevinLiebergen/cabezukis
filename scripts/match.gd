@@ -3,9 +3,17 @@ extends Node2D
 
 const W := 1280.0
 const H := 720.0
-const FLOOR_Y := 640.0
-const GOAL_W := 100.0     # profundidad de la portería desde la pared (igual de ancha)
-const CROSSBAR_Y := 405.0 # altura del larguero (misma anchura, ~1.8x más alta)
+## Porterías/personajes/pelota al 80% de su tamaño original (ver Head.RADIUS,
+## Ball.BASE_RADIUS) y suelo de juego subido un poco (antes 640): deja hueco
+## libre abajo en pantalla para agrandar los controles táctiles (ver
+## BTN_SIZE) sin que se monten sobre la jugada. El "escenario" de fondo
+## (cielo/gradas/pared) no se toca -ver FieldArt.BACKDROP_WALL_BOTTOM-, solo
+## el suelo/porterías/personajes que juegan encima de él. Debe mantenerse en
+## sincronía con las mismas constantes en field_art.gd (que a su vez las
+## comparte con goal_front.gd).
+const FLOOR_Y := 600.0
+const GOAL_W := 150.0      # antes 100: acerca las porterías entre sí (ver FieldArt._draw_goal)
+const CROSSBAR_Y := 414.4  # antes 405: (FLOOR_Y + SUBMERGE) - (altura original * 0.8)
 
 const P1_SPAWN := Vector2(320, FLOOR_Y - Head.RADIUS)
 const P2_SPAWN := Vector2(W - 320, FLOOR_Y - Head.RADIUS)
@@ -45,14 +53,24 @@ var _my_powerup_buttons: Array[Button] = []
 var _rival_powerup_labels: Array[Label] = []
 ## Power-ups ya usados y todavía surtiendo efecto, por lado ("p1"/"p2") y
 ## hueco (índice igual al de _my_powerup_buttons cuando el lado es el mío):
-## null si ese hueco no tiene nada activo ahora mismo. Independiente de
-## held_powerups (que solo guarda lo NO usado aún): al activarse un hueco, el
-## tipo se quita de held_powerups pero se guarda aquí con su duración para
-## poder dibujar la cuenta atrás en el propio botón (ver _draw_powerup_clock).
-## Se trackean los dos lados (no solo "el mío") porque en el servidor de una
-## partida online la activación de cualquiera de los dos jugadores pasa por
-## aquí; cada cliente solo dibuja el reloj de su propio lado.
-var _active_powerup: Dictionary = {"p1": [null, null], "p2": [null, null]}
+## null si ese hueco no tiene nada activo ahora mismo. held_powerups[idx] NO
+## se toca al activarse (se queda con su tipo original para siempre, ver el
+## comentario en head.gd) -solo se marca used_powerups[idx]-, y aquí se
+## guarda tipo/duración para poder dibujar la cuenta atrás en el propio
+## botón (ver _draw_powerup_clock). Se trackean los dos lados (no solo "el
+## mío") porque en el servidor de una partida online la activación de
+## cualquiera de los dos jugadores pasa por aquí; cada cliente solo dibuja
+## el reloj de su propio lado.
+var _active_powerup: Dictionary = {"p1": _make_empty_powerup_slots(), "p2": _make_empty_powerup_slots()}
+var _p1_face_icon: TextureRect
+var _p2_face_icon: TextureRect
+## Fila de iconitos con los power-ups pendientes de cada jugador, dentro del
+## propio marcador, debajo de su nombre -aparte de los botones de las
+## esquinas (ver _my_powerup_buttons, los que de verdad se tocan para
+## activarlos): esto es la única vista de los power-ups del rival, se
+## repuebla entera en cada _update_powerup_hud.
+var _p1_mini_row: HBoxContainer
+var _p2_mini_row: HBoxContainer
 var _announce_label: Label
 var _announce_time := 0.0
 var _center_label: Label
@@ -76,8 +94,15 @@ var _goal_front: GoalFront
 ## mezclado más suave: balón y cabezudos deben seguir leyéndose bien de un
 ## vistazo aunque el escenario sea una foto oscura o muy saturada.
 var _actor_tint := Color(1, 1, 1)
-var _goal_shapes: Dictionary = {}      # "left"/"right" -> RectangleShape2D
-var _goal_base_sizes: Dictionary = {}  # "left"/"right" -> Vector2 (tamaño normal)
+## "left"/"right" -> SegmentShape2D del tramo de red (ver _add_goal_backstop):
+## _set_goal_enlarged sube el punto de arriba de la diagonal cuando la
+## portería se agranda, para que la red siga tapando toda la boca (más alta)
+## y el gol se siga contando ahí, no solo hasta la altura normal.
+var _goal_net_shapes: Dictionary = {}
+## "left"/"right" -> StaticBody2D del larguero físico (ver _add_static_box):
+## _set_goal_enlarged lo sube en sintonía con la red/zona de gol al agrandar
+## la portería, para que el larguero de verdad esté donde se ve.
+var _goal_crossbar_bodies: Dictionary = {}
 
 # Controles táctiles: izquierda/derecha a la izquierda de la pantalla; a la
 # derecha, disparo elevado y salto.
@@ -146,6 +171,10 @@ func _ready() -> void:
 
 	_post_audio = AudioStreamPlayer.new()
 	_post_audio.stream = load("res://audio/porteria.ogg")
+	# porteria.ogg es un archivo mucho más flojo de origen que golpeopelota.ogg
+	# (pico -16.4dB vs -0.0dB, medido con ffmpeg volumedetect): +16.4dB iguala
+	# su pico al de golpeopelota.ogg para que suenen igual de fuertes.
+	_post_audio.volume_db = 16.4
 	add_child(_post_audio)
 
 	_pause_audio = AudioStreamPlayer.new()
@@ -178,17 +207,31 @@ func _build_field() -> void:
 	_add_static_box(Rect2(-60, -300, 60, H + 300))               # pared izq
 	_add_static_box(Rect2(W, -300, 60, H + 300))                 # pared dcha
 	_add_static_box(Rect2(-60, -300, W + 120, 60))               # techo
-	_add_static_box(Rect2(0, CROSSBAR_Y - 12, GOAL_W, 12), true)       # larguero izq
-	_add_static_box(Rect2(W - GOAL_W, CROSSBAR_Y - 12, GOAL_W, 12), true)  # larguero dcho
-	_add_goal_sensor(Rect2(0, CROSSBAR_Y, 48, FLOOR_Y - CROSSBAR_Y), true)
-	_add_goal_sensor(Rect2(W - 48, CROSSBAR_Y, 48, FLOOR_Y - CROSSBAR_Y), false)
+	# Los largueros se guardan (ver _goal_crossbar_bodies) porque
+	# _set_goal_enlarged los sube en sintonía con la red al agrandar la
+	# portería: antes se quedaban siempre a la altura normal, así que con la
+	# portería agrandada un disparo podía cruzar por donde se VE el larguero
+	# más alto sin chocar con nada de verdad ahí (el larguero físico seguía
+	# mucho más abajo).
+	_goal_crossbar_bodies["left"] = _add_static_box(Rect2(0, CROSSBAR_Y - 12, GOAL_W, 12), true)
+	_goal_crossbar_bodies["right"] = _add_static_box(Rect2(W - GOAL_W, CROSSBAR_Y - 12, GOAL_W, 12), true)
+	# El gol se cuenta al chocar con la barrera diagonal del fondo de la red
+	# (ver _add_goal_backstop/ball.gd touched_goal_net) O al entrar en la zona
+	# interior de la portería (ver _add_goal_area): lo primero que salte
+	# cuenta, así que cubre tanto "llega hasta el fondo" como "se queda
+	# dentro sin llegar exactamente a esa línea" (p.ej. cerca del poste con
+	# la portería agrandada).
+	_add_goal_backstop(true)
+	_add_goal_backstop(false)
+	_add_goal_area(true)
+	_add_goal_area(false)
 
 ## "is_post": marca los tramos de larguero (único elemento del marco de la
 ## portería con colisión física real; los postes verticales son solo
 ## dibujo, ver goal_front.gd) con el grupo "goal_post" para que Ball los
 ## distinga de suelo/paredes y avise con la señal touched_post (ver
 ## _on_body_entered en ball.gd) al sonar el "clang" de palo.
-func _add_static_box(rect: Rect2, is_post: bool = false) -> void:
+func _add_static_box(rect: Rect2, is_post: bool = false) -> StaticBody2D:
 	var body := StaticBody2D.new()
 	body.collision_layer = 1
 	if is_post:
@@ -200,22 +243,108 @@ func _add_static_box(rect: Rect2, is_post: bool = false) -> void:
 	body.position = rect.position + rect.size / 2.0
 	body.add_child(cs)
 	add_child(body)
+	return body
 
-func _add_goal_sensor(rect: Rect2, is_left: bool) -> void:
+## Capa aparte (ni "mundo" =1, ni "balón" =2, ni "cabezudos" =4) para el tope
+## del fondo de la red: la llevan tanto Head (ver _ready en head.gd, bloquea
+## a los personajes) como Ball (ver ball.gd), que además usa el propio
+## contacto con ella como disparador del gol (ver touched_goal_net).
+const GOAL_BACKSTOP_LAYER := 8
+## Capa aparte SOLO para cabezudos (ver Head.collision_mask), la extensión
+## vertical sin límite de altura que evita que salten por encima del tramo
+## diagonal estando ya dentro de la portería (ver _add_goal_backstop). El
+## balón NO la lleva en su máscara a propósito: un disparo que pasa por
+## encima del larguero y sale por fuera (por arriba, sin entrar de verdad a
+## portería) no debe chocar con nada ahí ni contar como gol -bug reportado:
+## "con la portería en tamaño estándar se detecta gol cuando el balón ha ido
+## por arriba por fuera", porque antes compartía la misma capa/grupo que el
+## tramo diagonal (el que sí dispara el gol).
+const GOAL_JUMP_WALL_LAYER := 16
+
+## La red no es una pared vertical: se hunde hacia atrás según baja (billows
+## backward), más profunda junto al suelo que junto al larguero -ver
+## FieldArt.NET_BACK_FRAC_TOP/FLOOR-. Una barrera vertical de una sola x no
+## seguía esa forma: a la altura del larguero dejaba hueco por delante de
+## donde la red "de verdad" empieza, y un salto justo al entrar en la
+## portería podía colarse por ahí. El tramo de red va en diagonal, del punto
+## del suelo al del larguero (capa GOAL_BACKSTOP_LAYER, la lleva también el
+## balón y dispara el gol); de ahí sigue recta hacia arriba sin límite de
+## altura en una capa APARTE (GOAL_JUMP_WALL_LAYER, solo cabezudos) para que
+## tampoco se pueda saltar por encima estando ya dentro, sin que un disparo
+## alto que sale por fuera choque con ella ni cuente como gol.
+func _add_goal_backstop(is_left: bool) -> void:
+	var near_x := GOAL_W if is_left else W - GOAL_W
+	var s := -1.0 if is_left else 1.0
+	var depth := FieldArt.goal_depth()
+	var x_top := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_TOP)
+	var x_floor := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_FLOOR)
+	var net_body := StaticBody2D.new()
+	net_body.collision_layer = GOAL_BACKSTOP_LAYER
+	net_body.add_to_group("goal_backstop_left" if is_left else "goal_backstop_right")
+	var diagonal := SegmentShape2D.new()
+	diagonal.a = Vector2(x_top, CROSSBAR_Y)
+	diagonal.b = Vector2(x_floor, FLOOR_Y)
+	var diagonal_cs := CollisionShape2D.new()
+	diagonal_cs.shape = diagonal
+	net_body.add_child(diagonal_cs)
+	add_child(net_body)
+	_goal_net_shapes["left" if is_left else "right"] = diagonal
+
+	var jump_wall := StaticBody2D.new()
+	jump_wall.collision_layer = GOAL_JUMP_WALL_LAYER
+	var vertical := SegmentShape2D.new()
+	vertical.a = Vector2(x_top, CROSSBAR_Y)
+	vertical.b = Vector2(x_top, -300.0)
+	var vertical_cs := CollisionShape2D.new()
+	vertical_cs.shape = vertical
+	jump_wall.add_child(vertical_cs)
+	add_child(jump_wall)
+
+## Zona (no solo la línea diagonal de la red) que cuenta como gol si el balón
+## está dentro: un trapecio desde el fondo de la red hasta la propia boca
+## (GOAL_AREA_FRONT_FRAC=1.0, el mismo x que el poste/larguero físico), a toda
+## la altura desde el larguero hasta el suelo -exactamente "por debajo del
+## larguero", como una portería de verdad-. Sin esto, un balón que entra por
+## arriba cerca del poste y se queda ahí sin llegar a tocar exactamente la
+## línea diagonal del fondo -bug reportado, sobre todo con la portería
+## agrandada, donde la boca es más alta- nunca contaba como gol.
+##
+## Antes llegaba solo hasta la mitad (0.5) para no contar el gol "demasiado
+## pronto" (antes de que el balón entrase visualmente del todo); prioridad
+## invertida a propósito: es peor fallar un gol de verdad que ganar algún
+## caso donde visualmente el balón no se ve entrar del todo. El larguero
+## físico (ver _goal_crossbar_bodies) ya se encarga de que un disparo que da
+## en la barra rebote sin contar en vez de "colarse" por la zona.
+##
+## Es un disparador aparte del de la red (ver touched_goal_net/
+## _add_goal_backstop): cualquiera de los dos que salte primero cuenta el
+## gol, el otro no hace nada porque _on_goal ya corta en cuanto play_locked
+## queda a true.
+const GOAL_AREA_FRONT_FRAC := 1.0
+var _goal_area_polys: Dictionary = {}
+
+func _add_goal_area(is_left: bool) -> void:
+	var near_x := GOAL_W if is_left else W - GOAL_W
+	var s := -1.0 if is_left else 1.0
+	var depth := FieldArt.goal_depth()
+	var x_top := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_TOP)
+	var x_floor := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_FLOOR)
+	var front_top: float = lerp(x_top, near_x, GOAL_AREA_FRONT_FRAC)
+	var front_floor: float = lerp(x_floor, near_x, GOAL_AREA_FRONT_FRAC)
 	var area := Area2D.new()
 	area.collision_layer = 0
-	area.collision_mask = 2
-	var shape := RectangleShape2D.new()
-	shape.size = rect.size
-	var cs := CollisionShape2D.new()
-	cs.shape = shape
-	area.position = rect.position + rect.size / 2.0
-	area.add_child(cs)
+	area.collision_mask = 2  # balón
+	var poly := CollisionPolygon2D.new()
+	poly.polygon = PackedVector2Array([
+		Vector2(x_top, CROSSBAR_Y),
+		Vector2(x_floor, FLOOR_Y),
+		Vector2(front_floor, FLOOR_Y),
+		Vector2(front_top, CROSSBAR_Y),
+	])
+	area.add_child(poly)
 	area.body_entered.connect(func(body): _on_goal(body, is_left))
 	add_child(area)
-	var key := "left" if is_left else "right"
-	_goal_shapes[key] = shape
-	_goal_base_sizes[key] = rect.size
+	_goal_area_polys["left" if is_left else "right"] = poly
 
 func _build_actors() -> void:
 	ball = Ball.new()
@@ -227,14 +356,12 @@ func _build_actors() -> void:
 	# cualquier cambio futuro en ese orden).
 	ball.name = "Ball"
 	add_child(ball)
-	# Solo en servidor/offline: en un cliente online la física del balón está
-	# congelada (puro muñeco de red, ver _setup_online_actors) y esta señal
-	# no tiene por qué disparar de forma fiable ni sincronizada con lo que ve
-	# el rival -el sonido de golpeo en el cliente llega por RPC desde el
-	# servidor, ver _apply_ball_contact_sound-.
-	if not (Net.is_online() and not Net.is_server()):
-		ball.touched_by_head.connect(func(head): head._on_ball_contact())
+	# El sonido de golpeo por cabeceo ya no depende de una señal del balón
+	# (no hay colisión física nativa entre balón y cabeza, ver
+	# ball.gd/head.gd): cada Head llama a su propio _on_ball_contact()
+	# directamente desde el cabeceo por proximidad.
 	ball.touched_post.connect(_on_ball_touched_post)
+	ball.touched_goal_net.connect(func(is_left): _on_goal(ball, is_left))
 
 	p1_head = Head.new()
 	p1_head.position = P1_SPAWN
@@ -253,6 +380,19 @@ func _build_actors() -> void:
 		p2_head.setup(GameState.p2, -1, true, ball, self, GameState.cpu_difficulty)
 	p2_head.tint = _actor_tint
 	add_child(p2_head)
+	p1_head.rival = p2_head
+	p2_head.rival = p1_head
+	# Enganchado a physics_frame (no a _physics_process de Match): se dispara
+	# justo ANTES de que Godot llame a _physics_process en cada nodo, así que
+	# estas correcciones ven la posición de cabezudos y balón tal como quedó
+	# al FINAL del frame de física anterior -con un frame de retraso, no del
+	# todo "instantáneo". En movimiento normal y gradual es imperceptible,
+	# pero un teletransporte directo de posición (un test, un reset...) que
+	# deje el balón ya solapado puede verse corregido un frame más tarde de
+	# lo que parece a primera vista.
+	get_tree().physics_frame.connect(_resolve_head_collision)
+	get_tree().physics_frame.connect(_resolve_ball_single_overlap)
+	get_tree().physics_frame.connect(_resolve_ball_tunnel)
 
 	if Net.is_online():
 		_setup_online_actors()
@@ -394,23 +534,53 @@ func _build_hud() -> void:
 	_hud.add_child(top)
 	var vb := VBoxContainer.new()
 	top.add_child(vb)
+	# Fila del marcador: cara de cada jugador a los lados (recortadas en
+	# círculo, igual que en el partido, ver FaceUtil) y en medio el nombre +
+	# marcador de siempre.
+	var score_row := HBoxContainer.new()
+	score_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	score_row.add_theme_constant_override("separation", 10)
+	vb.add_child(score_row)
+	_p1_face_icon = _make_score_face_icon(GameState.p1.face)
+	score_row.add_child(_p1_face_icon)
 	_score_label = Label.new()
 	_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_score_label.add_theme_font_size_override("font_size", 30)
-	vb.add_child(_score_label)
+	score_row.add_child(_score_label)
+	_p2_face_icon = _make_score_face_icon(GameState.p2.face)
+	score_row.add_child(_p2_face_icon)
 
-	# Aparte del marcador (no dentro de "top"/"vb"): anclado a todo el ancho
-	# de la pantalla con anchor_left/right 0/1, para que quede centrado de
-	# verdad en el centro real de la pantalla en cualquier resolución, en vez
-	# de heredar el centrado del panel del marcador.
+	# Segunda (y última) fila, a todo el ancho de la caja: iconitos de
+	# power-ups pendientes de cada jugador a los lados (el de p1 bajo su
+	# nombre, el de p2 igual bajo el suyo) y el tiempo en medio -misma fila
+	# que el reloj, no una fila aparte, para no hacer la caja más alta de lo
+	# necesario-. Espaciador al ancho de la cara + separación de score_row
+	# (34+10=44) a cada lado: sin él, los iconos quedaban bajo la CARA (el
+	# elemento más a los extremos de la fila de arriba) en vez de bajo el
+	# NOMBRE, que empieza justo después de la cara.
+	const FACE_COL_WIDTH := 44.0
+	var bottom_row := HBoxContainer.new()
+	vb.add_child(bottom_row)
+	var p1_spacer := Control.new()
+	p1_spacer.custom_minimum_size = Vector2(FACE_COL_WIDTH, 0)
+	bottom_row.add_child(p1_spacer)
+	_p1_mini_row = HBoxContainer.new()
+	_p1_mini_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_p1_mini_row.alignment = BoxContainer.ALIGNMENT_BEGIN
+	bottom_row.add_child(_p1_mini_row)
 	_time_label = Label.new()
+	_time_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_time_label.add_theme_font_size_override("font_size", 22)
 	_time_label.add_theme_color_override("font_color", Color(1, 0.95, 0.6))
-	_time_label.anchor_left = 0.0
-	_time_label.anchor_right = 1.0
-	_time_label.position.y = 52
-	_hud.add_child(_time_label)
+	bottom_row.add_child(_time_label)
+	_p2_mini_row = HBoxContainer.new()
+	_p2_mini_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_p2_mini_row.alignment = BoxContainer.ALIGNMENT_END
+	bottom_row.add_child(_p2_mini_row)
+	var p2_spacer := Control.new()
+	p2_spacer.custom_minimum_size = Vector2(FACE_COL_WIDTH, 0)
+	bottom_row.add_child(p2_spacer)
 
 	_announce_label = Label.new()
 	_announce_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -439,6 +609,7 @@ func _build_hud() -> void:
 	menu_btn.text = "Menú"
 	menu_btn.position = Vector2(12, 12)
 	menu_btn.add_theme_font_size_override("font_size", 20)
+	_style_hud_button(menu_btn)
 	menu_btn.pressed.connect(func():
 		if Net.is_online():
 			Net.stop()
@@ -447,8 +618,9 @@ func _build_hud() -> void:
 
 	_pause_btn = Button.new()
 	_pause_btn.text = "⏸ Pausa"
-	_pause_btn.position = Vector2(90, 12)
+	_pause_btn.position = Vector2(118, 12)
 	_pause_btn.add_theme_font_size_override("font_size", 20)
+	_style_hud_button(_pause_btn)
 	_pause_btn.pressed.connect(_request_pause)
 	_hud.add_child(_pause_btn)
 
@@ -463,17 +635,19 @@ func _build_hud() -> void:
 	const POWERUP_BTN_SIZE := 110.0
 	const POWERUP_BTN_MARGIN := 12.0
 	const POWERUP_BTN_GAP := 10.0
-	for i in 2:
+	for i in POWERUPS_PER_HALF:
 		var btn := Button.new()
 		btn.custom_minimum_size = Vector2(POWERUP_BTN_SIZE, POWERUP_BTN_SIZE)
 		btn.anchor_left = 1.0
 		btn.anchor_right = 1.0
-		# i=1 pegado al borde derecho, i=0 justo a su izquierda.
-		var offset_from_edge := 1 - i
+		# El último hueco (POWERUPS_PER_HALF - 1) pegado al borde derecho, los
+		# anteriores hacia la izquierda en orden.
+		var offset_from_edge := (POWERUPS_PER_HALF - 1) - i
 		var x := -POWERUP_BTN_MARGIN - POWERUP_BTN_SIZE - offset_from_edge * (POWERUP_BTN_SIZE + POWERUP_BTN_GAP)
 		btn.position = Vector2(x, 12)
 		btn.focus_mode = Control.FOCUS_NONE
-		btn.add_theme_font_size_override("font_size", 56)
+		# Proporcional al tamaño de antes (56 sobre 110px de botón).
+		btn.add_theme_font_size_override("font_size", roundi(56.0 * POWERUP_BTN_SIZE / 110.0))
 		var idx := i
 		btn.pressed.connect(func(): _request_activate_powerup_slot(idx))
 		btn.draw.connect(func(): _draw_powerup_clock(btn, idx))
@@ -506,6 +680,39 @@ func _make_powerup_badge() -> Label:
 	style.border_color = Color(1, 1, 1, 0.4)
 	l.add_theme_stylebox_override("normal", style)
 	return l
+
+## Esquinas redondeadas para Menú/Pausa, a juego con la caja del marcador
+## (mismo radio, mismo tono oscuro translúcido): antes usaban el botón nativo
+## de Godot sin más, sin esquinas redondeadas ni relación visual con el resto
+## del HUD.
+func _style_hud_button(btn: Button) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.45)
+	sb.set_corner_radius_all(14)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 6
+	sb.content_margin_bottom = 6
+	btn.add_theme_stylebox_override("normal", sb)
+	var hov := sb.duplicate()
+	hov.bg_color = Color(0, 0, 0, 0.6)
+	btn.add_theme_stylebox_override("hover", hov)
+	btn.add_theme_stylebox_override("pressed", hov)
+	btn.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+## Cara del jugador junto a su nombre en el marcador, recortada en círculo
+## igual que en el partido (ver FaceUtil.circle_material, usado también en
+## head.gd para la cara del cabezudo).
+func _make_score_face_icon(tex: Texture2D) -> TextureRect:
+	var icon := TextureRect.new()
+	icon.texture = tex
+	icon.custom_minimum_size = Vector2(34, 34)
+	# Sin esto, TextureRect usa el tamaño nativo de la foto (bastante más
+	# grande que 34px) como su propio mínimo, ignorando custom_minimum_size.
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.material = FaceUtil.circle_material()
+	return icon
 
 ## Estilo de un hueco-botón de power-up del humano: tarjeta redondeada con
 ## borde y brillo del color propio del power-up (Powerup.COLORS), o gris
@@ -559,21 +766,32 @@ func _draw_powerup_clock(btn: Button, idx: int) -> void:
 		btn.draw_line(center, center + Vector2(cos(end_angle), sin(end_angle)) * radius,
 			Color(1, 1, 1, 0.75), 2.0)
 
+## Color gris apagado para un power-up ya usado (se queda a la vista en vez
+## de borrarse/vaciarse, ver head.gd held_powerups/used_powerups): así se
+## sigue viendo cuál era, solo que "apagado", en botones, insignias y
+## mini-iconos por igual.
+const USED_POWERUP_COLOR := Color(0.65, 0.65, 0.65, 0.4)
+
 func _update_powerup_hud() -> void:
 	var my_head := _my_head()
 	var my_active: Array = _active_powerup[_my_side_key()]
 	for i in _my_powerup_buttons.size():
 		var btn: Button = _my_powerup_buttons[i]
 		var active = my_active[i]
+		var type: int = my_head.held_powerups[i] if i < my_head.held_powerups.size() else -1
 		if active != null:
-			# Ya usado y todavía activo: se ve igual que "guardado" (mismo
-			# icono/color) pero sin poder volver a tocarlo, con la cuenta
-			# atrás de _draw_powerup_clock encima.
+			# Todavía activo (cuenta atrás en marcha, ver _draw_powerup_clock):
+			# color propio del power-up, sin poder volver a tocarlo.
 			btn.text = Powerup.LABELS[active.type]
 			btn.disabled = true
 			_style_powerup_button(btn, Powerup.COLORS[active.type], true)
-		elif i < my_head.held_powerups.size() and my_head.held_powerups[i] != -1:
-			var type: int = my_head.held_powerups[i]
+		elif type != -1 and i < my_head.used_powerups.size() and my_head.used_powerups[i]:
+			# Ya usado y sin efecto activo: se queda a la vista, en gris, sin
+			# poder volver a tocarlo -antes desaparecía del todo aquí.
+			btn.text = Powerup.LABELS[type]
+			btn.disabled = true
+			_style_powerup_button(btn, USED_POWERUP_COLOR, false)
+		elif type != -1:
 			btn.text = Powerup.LABELS[type]
 			btn.disabled = false
 			_style_powerup_button(btn, Powerup.COLORS[type], true)
@@ -583,6 +801,8 @@ func _update_powerup_hud() -> void:
 			_style_powerup_button(btn, Color(1, 1, 1, 0.25), false)
 		btn.queue_redraw()
 	_fill_powerup_badges(_rival_powerup_labels, _rival_head().held_powerups)
+	_refresh_mini_powerup_row(_p1_mini_row, p1_head.held_powerups, p1_head.used_powerups)
+	_refresh_mini_powerup_row(_p2_mini_row, p2_head.held_powerups, p2_head.used_powerups)
 
 func _fill_powerup_badges(labels: Array[Label], held: Array) -> void:
 	for i in labels.size():
@@ -593,6 +813,22 @@ func _fill_powerup_badges(labels: Array[Label], held: Array) -> void:
 		else:
 			labels[i].text = ""
 			style.border_color = Color(1, 1, 1, 0.4)
+
+## Repuebla la fila de iconitos junto al marcador (ver _p1_mini_row/
+## _p2_mini_row): los ya usados (used[i] true) se quedan a la vista, en gris
+## -no se borran/saltan como antes-, para que se lea de un vistazo cuáles le
+## quedan por gastar a cada jugador.
+func _refresh_mini_powerup_row(row: HBoxContainer, held: Array, used: Array) -> void:
+	for child in row.get_children():
+		row.remove_child(child)
+		child.queue_free()
+	for i in held.size():
+		var l := Label.new()
+		l.text = Powerup.LABELS[held[i]]
+		l.add_theme_font_size_override("font_size", 14)
+		if i < used.size() and used[i]:
+			l.modulate = Color(1, 1, 1, 0.35)
+		row.add_child(l)
 
 ## Tamaño/márgenes de los controles táctiles, en "dp" de diseño (unidades del
 ## canvas 1280x720 de match.gd, que Godot reescala entero a la pantalla real
@@ -608,14 +844,18 @@ func _fill_powerup_badges(labels: Array[Label], held: Array) -> void:
 ## reales por mucho que se cambie BTN_SIZE aquí, y con centros tan juntos
 ## como marca BTN_GAP acaban solapándose y saliéndose de la pantalla —tal
 ## cual el bug reportado.
-const BTN_SIZE := 60.0
-const BTN_SAFE_MARGIN := 24.0  # margen a los bordes de la pantalla (safe area)
+## Antes 60/24/50: botones más grandes y con más margen a los bordes (izq. y
+## dcha.), aprovechando el hueco que deja abajo el campo más pequeño/subido
+## (ver FLOOR_Y). GAP escalado en la misma proporción que SIZE (84/60) para
+## conservar el mismo margen relativo entre zonas de toque contiguas.
+const BTN_SIZE := 84.0
+const BTN_SAFE_MARGIN := 40.0  # margen a los bordes de la pantalla (safe area)
 ## Hueco entre botones contiguos: bastante más que el tamaño del icono en sí,
 ## a propósito, para dejar sitio a una zona de toque bien más grande que el
 ## icono (ver BTN_TOUCH_SCALE) sin que las de dos botones vecinos lleguen a
 ## tocarse. Con solo 2+2 botones (ya no hay disparo raso) sobra hueco lateral
 ## de sitio para permitírselo.
-const BTN_GAP := 50.0
+const BTN_GAP := 70.0
 ## La zona de toque real (invisible) mide BTN_SIZE * este factor: más grande
 ## que el propio icono para que sea fácil acertar sin tener que agrandar el
 ## dibujo. Con BTN_GAP=50 deja ~20px de margen hasta la zona del vecino.
@@ -713,6 +953,95 @@ func _physics_process(_delta: float) -> void:
 func get_touch_input() -> Dictionary:
 	return _touch_state
 
+## Separa a los dos cabezudos si se solapan (empuje simétrico, solo posición,
+## sin tocar velocidad): así se chocan en vez de atravesarse. Corre una vez
+## por frame física (con un frame de retraso respecto al movimiento de ese
+## frame, ver el comentario sobre physics_frame en _build_actors), así que
+## resuelve el solape entero de golpe en vez de perseguirlo a medias frame a
+## frame.
+func _resolve_head_collision() -> void:
+	if p1_head == null or p2_head == null or play_locked:
+		return
+	var diff := p1_head.global_position - p2_head.global_position
+	var dist := diff.length()
+	var min_dist := Head.RADIUS * 2.0
+	if dist > 0.001 and dist < min_dist:
+		var push := diff.normalized() * ((min_dist - dist) * 0.5)
+		p1_head.global_position += push
+		p2_head.global_position -= push
+
+## Empuje de POSICIÓN (no de velocidad) que saca al balón de dentro de un
+## único cabezudo si se solapan de verdad (el centro del balón ya dentro del
+## círculo del cabezudo, no solo tocando el borde -ver el umbral RADIUS, más
+## estricto que el de contacto normal de head.gd, para no pisarle el toque
+## normal-), cuando el rival NO está también encima (eso es el apretón de
+## verdad, ver _resolve_ball_tunnel más abajo). El empujón de head.gd
+## (cabeceo por proximidad, con su propio cooldown de 0.12s) es el que da la
+## sensación de impacto, pero al ir por impulso -con un paso de física de
+## retraso, ver el comentario en head.gd sobre apply_central_impulse- un
+## balón que llega ya lanzado hacia un cabezudo (p.ej. recién cabeceado por
+## el rival) podía cruzar su centro antes de que el empujón hiciera efecto
+## -bug reportado: "atraviesa mi jugador la pelota y no la impacta"-. Esto es
+## solo una garantía geométrica de que el balón nunca queda DENTRO de un
+## cabezudo, complementaria al empujón con sensación de impacto -saca al
+## balón justo al borde de la cabeza, no fuera del todo de su zona de
+## cabeceo, para que head.gd pueda seguir detectando el contacto normal.
+func _resolve_ball_single_overlap() -> void:
+	if ball == null or p1_head == null or p2_head == null or play_locked:
+		return
+	var combined := Head.RADIUS + ball.radius
+	for head: Head in [p1_head, p2_head]:
+		var rival: Head = p2_head if head == p1_head else p1_head
+		if ball.global_position.distance_to(rival.global_position) < combined:
+			continue  # apretón de verdad, lo resuelve _resolve_ball_tunnel
+		var diff: Vector2 = ball.global_position - head.global_position
+		var dist: float = diff.length()
+		# Mismo umbral que el cabeceo por proximidad de head.gd (RADIUS +
+		# ball.radius - 2): si ya está lo bastante cerca para que head.gd lo
+		# cabecee este mismo frame (esta función corre DESPUÉS, ver
+		# physics_frame), no bloquea ese cabeceo -sale justo hasta el borde
+		# de esa misma zona de contacto, ni un pixel más lejos-.
+		if dist > 0.001 and dist < combined - 2.0:
+			ball.global_position = head.global_position + diff.normalized() * combined
+
+## SOLO para el apretón de verdad: los dos cabezudos tocando el balón A LA
+## VEZ, cerrando desde lados opuestos (arrastrándolo entre los dos, no un
+## toque puntual de uno solo). En ese caso concreto el motor de físicas no
+## encuentra una posición válida sin solaparse contra los dos cuerpos
+## cinemáticos a la vez, y sin corregirlo a veces "atravesaba" a alguno de
+## los dos o (peor, con un intento anterior de este arreglo) el balón
+## directamente desaparecía. continuous_cd en ball.gd no llega a cubrir este
+## caso (pensado para un cuerpo rápido contra un obstáculo fino y quieto, no
+## para dos que cierran a la vez).
+##
+## Importante: si SOLO un cabezudo toca el balón (el caso normal de toda la
+## partida, cabecear/driblar/chutar), esta función no hace nada -eso ya lo
+## resuelve bien el sistema de cabeceo por proximidad de head.gd más la
+## física normal, tal cual estaba antes de tocar nada de esto-. Los intentos
+## anteriores corregían también el contacto de un solo cabezudo (empujando
+## siempre fuera de su círculo, con un "si el empuje es pequeño, sal hacia
+## arriba" pensado solo para cuando los dos empujes se cancelan entre sí),
+## y eso disparaba el escape hacia arriba también con un toque normal y flojo
+## de un único cabezudo -bug reportado: "cuando contacto la bola de frente
+## sin dar patada a veces va hacia arriba"-, ya que un solape pequeño de un
+## solo cabezudo también da un empuje pequeño, sin que haya ningún apretón
+## real de por medio.
+func _resolve_ball_tunnel() -> void:
+	if ball == null or p1_head == null or p2_head == null or play_locked:
+		return
+	var combined := Head.RADIUS + ball.radius
+	var d1 := ball.global_position.distance_to(p1_head.global_position)
+	var d2 := ball.global_position.distance_to(p2_head.global_position)
+	if d1 >= combined or d2 >= combined:
+		return
+	# Apretón de verdad. El único hueco libre es hacia arriba (cierran por
+	# los lados); la fuerza del escape va acorde a lo rápido que cierren los
+	# dos -flojo si van despacio, fuerte si van rápido-, para que se sienta
+	# como un rebote natural y no un tirón siempre igual.
+	var closing_speed := p1_head.velocity.length() + p2_head.velocity.length()
+	var escape_speed := clampf(140.0 + closing_speed * 0.5, 140.0, 650.0)
+	ball.linear_velocity = Vector2(ball.linear_velocity.x * 0.25, -escape_speed)
+
 ## Cliente online: captura el input propio (teclado/táctil, igual que el
 ## humano local de siempre) y se lo manda al servidor en vez de aplicarlo a
 ## un Head local -el propio cabezudo del jugador es, en su pantalla, tan
@@ -797,8 +1126,38 @@ func _process(delta: float) -> void:
 			return
 		if time_left <= 0.0:
 			_on_time_up()
+	_check_ball_stuck(delta)
+	_tick_cpu_powerup_delays(delta)
 
 # ---------------- Goles y final ----------------
+
+## Umbral de velocidad para considerar el balón "parado" (encima del
+## larguero, apoyado en la superficie plana) y cuánto tiempo tiene que
+## llevar así antes de forzar un rebote hacia el campo -si no, podía quedarse
+## ahí el resto del tiempo, fuera de juego.
+const BALL_STUCK_SPEED := 12.0
+const BALL_STUCK_TIME := 1.2
+var _ball_stuck_timer := 0.0
+
+func _check_ball_stuck(delta: float) -> void:
+	if ball.freeze:
+		_ball_stuck_timer = 0.0
+		return
+	var bp := ball.global_position
+	var on_left_bar := bp.y < CROSSBAR_Y and bp.x > -ball.radius and bp.x < GOAL_W + ball.radius
+	var on_right_bar := bp.y < CROSSBAR_Y and bp.x > W - GOAL_W - ball.radius and bp.x < W + ball.radius
+	if (on_left_bar or on_right_bar) and ball.linear_velocity.length() < BALL_STUCK_SPEED:
+		_ball_stuck_timer += delta
+		if _ball_stuck_timer >= BALL_STUCK_TIME:
+			_ball_stuck_timer = 0.0
+			# Empuje hacia el centro del campo (no solo hacia arriba: si no,
+			# podía volver a caer sobre el mismo larguero) y hacia arriba para
+			# despegarlo de la barra.
+			var dir := 1.0 if on_left_bar else -1.0
+			ball.linear_velocity = Vector2.ZERO
+			ball.apply_central_impulse(Vector2(dir * 520.0, -260.0))
+	else:
+		_ball_stuck_timer = 0.0
 
 ## "Clang" al golpear el larguero (único tramo de la portería con colisión
 ## física real, ver _add_static_box/goal_post). Con cooldown propio para que
@@ -808,6 +1167,12 @@ func _on_ball_touched_post() -> void:
 		return
 	_post_sound_cooldown = 0.3
 	_post_audio.play()
+	# Los postes solo existen dentro de GOAL_W de cada pared (ver
+	# _build_field), así que la posición del balón basta para saber qué
+	# portería tembló: nunca puede estar cerca de las dos a la vez.
+	var is_left := ball.global_position.x < W / 2.0
+	_field_art.shake_goal(is_left)
+	_goal_front.shake_goal(is_left)
 
 func _on_goal(body: Node, left_goal: bool) -> void:
 	if not (body is Ball) or play_locked:
@@ -870,6 +1235,14 @@ func _apply_countdown_kickoff(intro_msg: String = "") -> void:
 	play_locked = true
 	_clear_effects()
 	_reset_ball(BALL_SPAWN)
+	# _reset_ball/ball.reset_at descongela el balón enseguida (solo lo frena
+	# un instante para poder recolocarlo): sin esto, con BALL_SPAWN bastante
+	# arriba (y=220), caía por gravedad durante los 3 segundos enteros de la
+	# cuenta atrás -bug reportado: "que la bola no se lance mientras está el
+	# contador 3 2 1 A JUGAR"-. Se vuelve a congelar aquí y se suelta más
+	# abajo, justo al mostrar "¡A JUGAR!", no antes.
+	if not (Net.is_online() and not Net.is_server()):
+		ball.freeze = true
 	p1_head.global_position = _p1_spawn
 	p1_head.velocity = Vector2.ZERO
 	p2_head.global_position = _p2_spawn
@@ -889,9 +1262,21 @@ func _apply_countdown_kickoff(intro_msg: String = "") -> void:
 	_pop_center_label()
 	_countdown_audio.stream = load("res://audio/silbato.ogg")
 	_countdown_audio.play()
+	# Si se pausó durante la cuenta atrás, que el balón se quede congelado
+	# hasta que se reanude de verdad (_apply_resume ya lo suelta entonces),
+	# no soltarlo aquí por debajo de la pausa.
+	if not paused and not (Net.is_online() and not Net.is_server()):
+		ball.freeze = false
 	await get_tree().create_timer(0.9).timeout
 	_center_label.visible = false
-	play_locked = false
+	# Si se ha pedido pausa MIENTRAS esta cuenta atrás seguía en marcha (el
+	# saque inicial arranca solo al cargar la partida, así que es fácil
+	# pausar antes de que termine), no desbloquear por debajo del panel de
+	# pausa -bug reportado: "el rival sigue moviéndose" en pausa-. Que gane
+	# la pausa; _apply_resume ya se encarga de desbloquear de verdad cuando
+	# el jugador reanude.
+	if not paused:
+		play_locked = false
 
 ## Saque tras un gol: a diferencia de _countdown_kickoff/_start_halftime,
 ## NO limpia los power-ups activos -que un power-up siga contando su tiempo
@@ -909,6 +1294,11 @@ func _kickoff(msg: String) -> void:
 func _apply_kickoff(msg: String) -> void:
 	play_locked = true
 	_reset_ball(BALL_SPAWN)
+	# Igual que en _apply_countdown_kickoff: sin esto el balón caía por
+	# gravedad durante este saque también, en vez de esperar quieto a que se
+	# desbloquee el juego.
+	if not (Net.is_online() and not Net.is_server()):
+		ball.freeze = true
 	p1_head.global_position = _p1_spawn
 	p1_head.velocity = Vector2.ZERO
 	p2_head.global_position = _p2_spawn
@@ -917,7 +1307,12 @@ func _apply_kickoff(msg: String) -> void:
 		_show_center(msg, 1.2)
 	await get_tree().create_timer(1.0).timeout
 	_center_label.visible = false
-	play_locked = false
+	# Mismo cuidado que en _apply_countdown_kickoff: no desbloquear por
+	# debajo de una pausa pedida mientras este saque seguía en marcha.
+	if not paused:
+		play_locked = false
+		if not (Net.is_online() and not Net.is_server()):
+			ball.freeze = false
 
 # ---------------- Descanso y cambio de campo ----------------
 
@@ -938,6 +1333,10 @@ func _apply_start_halftime() -> void:
 	halftime_done = true
 	in_halftime = true
 	play_locked = true
+	# _update_time_hud no se llama mientras play_locked esté activo (ver
+	# _process), así que el rótulo del marcador se queda congelado con lo
+	# último que tenía si no se pone aquí a mano.
+	_time_label.text = "PITI TIME"
 	_clear_effects()
 	_reset_ball(BALL_SPAWN)
 	ball.freeze = true
@@ -1197,15 +1596,20 @@ func _apply_resume() -> void:
 
 # ---------------- Power-ups ----------------
 
-const POWERUP_DURATION := 14.0
-const FREEZE_DURATION := 5.0
-const POWERUPS_PER_HALF := 2
+const POWERUP_DURATION := 6.0  # antes 12
+const FREEZE_DURATION := 3.0   # antes 6: el congelado en concreto, más corto
+const POWERUPS_PER_HALF := 3   # antes 2: para no quedarse tramos sin ninguno
+
+func _make_empty_powerup_slots() -> Array:
+	var slots: Array = []
+	slots.resize(POWERUPS_PER_HALF)
+	return slots
 
 ## Nada de iconos flotando por el campo: al empezar cada tiempo, cada
-## jugador recibe de golpe 2 power-ups aleatorios en su casilla (como un
-## sorteo de mano). El humano decide cuándo usarlos con el botón de
-## power-up; la IA no tiene criterio para elegir el momento, así que se los
-## gasta sola en algún punto aleatorio de ese tiempo.
+## jugador recibe de golpe POWERUPS_PER_HALF power-ups aleatorios en su
+## casilla (como un sorteo de mano). El humano decide cuándo usarlos con el
+## botón de power-up; la IA no tiene criterio para elegir el momento, así
+## que se los gasta sola en algún punto aleatorio de ese tiempo.
 ## Función de decisión (patrón igual que _countdown_kickoff/_start_halftime/
 ## etc.): solo corre en el servidor o en local offline, nunca en un cliente
 ## online -el sorteo usa randi(), si cada peer lo hiciera por su cuenta cada
@@ -1231,54 +1635,77 @@ func _roll_powerup_types() -> Array:
 func _apply_grant_powerups(p1_types: Array, p2_types: Array) -> void:
 	p1_head.held_powerups = p1_types
 	p2_head.held_powerups = p2_types
-	if p1_head.is_cpu:
-		_schedule_cpu_powerups(p1_head)
-	if p2_head.is_cpu:
-		_schedule_cpu_powerups(p2_head)
-	_active_powerup = {"p1": [null, null], "p2": [null, null]}
+	for head in [p1_head, p2_head]:
+		head.used_powerups.clear()
+		for i in head.held_powerups.size():
+			head.used_powerups.append(false)
+		if head.is_cpu:
+			_schedule_cpu_powerups(head)
+	_active_powerup = {"p1": _make_empty_powerup_slots(), "p2": _make_empty_powerup_slots()}
 	_update_powerup_hud()
+
+## Retrasos pendientes para que la IA use sus power-ups, Head -> Array[float]
+## en segundos. Antes esto se hacía con get_tree().create_timer(), que corre
+## en tiempo real sin mirar play_locked -bug reportado: pausabas la partida y
+## el rival seguía gastando power-ups igualmente-. Al llevar la cuenta atrás
+## a mano en _process, que ya corta en seco si play_locked (pausa, descanso,
+## saque inicial...), se congela exactamente igual que el resto del partido.
+var _cpu_powerup_delays: Dictionary = {}
 
 func _schedule_cpu_powerups(head: Head) -> void:
 	var half_len: float = GameState.match_duration / 2.0
+	var delays: Array = []
 	for i in POWERUPS_PER_HALF:
-		var delay := randf_range(4.0, maxf(5.0, half_len - 4.0))
-		get_tree().create_timer(delay).timeout.connect(func():
-			if not head.held_powerups.is_empty():
-				activate_powerup(head)
-		)
+		delays.append(randf_range(4.0, maxf(5.0, half_len - 4.0)))
+	_cpu_powerup_delays[head] = delays
 
-## Usa el power-up más antiguo que el cabezudo tiene guardado (si tiene
-## alguno): lo usa la IA (nunca elige hueco concreto) y también el atajo de
-## teclado "usar power-up" del humano local offline (tampoco elige hueco,
-## coge el primero disponible; en online ese atajo pasa por
-## rpc_request_activate_powerup_oldest más abajo, no por aquí). El humano
-## tocando directamente un botón concreto pasa por _activate_powerup_slot
-## con el índice de ESE hueco.
+func _tick_cpu_powerup_delays(delta: float) -> void:
+	for head in _cpu_powerup_delays.keys():
+		var delays: Array = _cpu_powerup_delays[head]
+		var i := 0
+		while i < delays.size():
+			delays[i] -= delta
+			if delays[i] <= 0.0:
+				delays.remove_at(i)
+				if head.used_powerups.has(false):
+					activate_powerup(head)
+			else:
+				i += 1
+
+## Usa el power-up más antiguo que el cabezudo tiene guardado y no ha usado
+## todavía (si tiene alguno): lo usa la IA (nunca elige hueco concreto) y
+## también el atajo de teclado "usar power-up" del humano local offline
+## (tampoco elige hueco, coge el primero disponible; en online ese atajo
+## pasa por rpc_request_activate_powerup_oldest más abajo, no por aquí). El
+## humano tocando directamente un botón concreto pasa por
+## _activate_powerup_slot con el índice de ESE hueco.
 func activate_powerup(head: Head) -> void:
 	if not head.is_cpu:
 		for i in head.held_powerups.size():
-			if head.held_powerups[i] != -1:
+			if not head.used_powerups[i]:
 				_activate_powerup_slot(head, i)
 				return
 		return
-	if head.held_powerups.is_empty():
-		return
-	var type: int = head.held_powerups.pop_front()
-	var rival := p2_head if head == p1_head else p1_head
-	_apply_powerup_effect(type, head, rival)
+	for i in head.held_powerups.size():
+		if not head.used_powerups[i]:
+			head.used_powerups[i] = true
+			var type: int = head.held_powerups[i]
+			_apply_powerup_effect(type, head, p1_head)
+			return
 
 ## Activa el power-up de un hueco concreto: valida y decide (patrón igual
 ## que el resto del archivo -ver _apply_goal etc.-), replicando vía
 ## _apply_activate_powerup_slot en online. Solo lo usa el humano (el hueco
-## solo tiene sentido para sus dos botones tocables): en vez de quitarlo de
-## held_powerups (que desplazaría el resto y desalinearía los botones fijos),
-## lo marca con -1 ("ya usado, hueco vacío hasta el próximo tiempo") y guarda
-## su tipo/duración en _active_powerup para dibujar la cuenta atrás en el
-## propio botón (ver _draw_powerup_clock) hasta que el efecto expira.
+## solo tiene sentido para sus dos... tres botones tocables): a diferencia de
+## antes, held_powerups[idx] NO se toca (se queda con su tipo original para
+## siempre, ver el comentario en head.gd) -solo se marca used_powerups[idx]-,
+## y se guarda tipo/duración en _active_powerup para dibujar la cuenta atrás
+## en el propio botón (ver _draw_powerup_clock) mientras el efecto sigue
+## activo.
 func _activate_powerup_slot(head: Head, idx: int) -> void:
 	if idx < 0 or idx >= head.held_powerups.size():
 		return
-	if head.held_powerups[idx] == -1:
+	if idx < head.used_powerups.size() and head.used_powerups[idx]:
 		return
 	var side := "p1" if head == p1_head else "p2"
 	if Net.is_online():
@@ -1291,10 +1718,10 @@ func _apply_activate_powerup_slot(side: String, idx: int) -> void:
 	var head := p1_head if side == "p1" else p2_head
 	if idx < 0 or idx >= head.held_powerups.size():
 		return
-	var type: int = head.held_powerups[idx]
-	if type == -1:
+	if idx < head.used_powerups.size() and head.used_powerups[idx]:
 		return
-	head.held_powerups[idx] = -1
+	head.used_powerups[idx] = true
+	var type: int = head.held_powerups[idx]
 	var dur := _powerup_duration(type)
 	_active_powerup[side][idx] = {"type": type, "duration": dur, "time_left": dur}
 	_update_powerup_hud()
@@ -1379,15 +1806,44 @@ func _apply_powerup_effect(type: Powerup.Type, who: Head, rival: Head) -> void:
 const GOAL_ENLARGE_FACTOR := 1.6
 
 ## Agranda (o revierte) la portería de un lado: el dibujo (FieldArt +
-## GoalFront) crece hacia arriba manteniendo la base anclada al suelo, y el
-## sensor de gol crece con ella para que de verdad sea más fácil marcar.
+## GoalFront) crece hacia arriba manteniendo la base anclada al suelo. El gol
+## se sigue contando igual (contacto con la barrera del fondo, ver
+## _add_goal_backstop): su tramo vertical, sin límite de altura, ya cubre
+## también la boca más alta que deja una portería agrandada.
 func _set_goal_enlarged(left: bool, enlarged: bool) -> void:
 	var factor := GOAL_ENLARGE_FACTOR if enlarged else 1.0
 	_field_art.set_goal_scale(left, factor)
 	_goal_front.set_goal_scale(left, factor)
-	var key := "left" if left else "right"
-	var shape: RectangleShape2D = _goal_shapes[key]
-	shape.size = _goal_base_sizes[key] * factor
+	# La red (tramo de red que dispara el gol, ver _add_goal_backstop) tiene
+	# que crecer con el dibujo: si no, un gol por la zona alta que solo deja
+	# la portería agrandada no se detecta -esa zona se queda por encima de
+	# donde alcanza la red sin agrandar, sin nada que dispare el gol-. El
+	# punto de abajo no se toca (la base sigue anclada al suelo, igual que el
+	# dibujo); solo sube el de arriba, siguiendo el mismo cálculo de
+	# FieldArt._draw_goal.
+	var shape: SegmentShape2D = _goal_net_shapes["left" if left else "right"]
+	var floor_bottom := FLOOR_Y + FieldArt.SUBMERGE
+	var gh := (floor_bottom - CROSSBAR_Y) * factor
+	var top_y := floor_bottom - gh
+	shape.a = Vector2(shape.a.x, top_y)
+	# La zona de gol (ver _add_goal_area) también tiene que subir su borde de
+	# arriba en sintonía: sus dos puntos "altos" (índices 0 y 3, a la altura
+	# del larguero) suben igual que el tramo diagonal; los dos "bajos" (en el
+	# suelo) no cambian.
+	var poly: CollisionPolygon2D = _goal_area_polys["left" if left else "right"]
+	var pts: PackedVector2Array = poly.polygon
+	pts[0] = Vector2(pts[0].x, top_y)
+	pts[3] = Vector2(pts[3].x, top_y)
+	poly.polygon = pts
+	# El larguero físico (el único elemento sólido que puede hacer que un
+	# disparo "rebote sin marcar" en vez de entrar) tiene que subir tanto como
+	# el dibujo: si se quedaba siempre a la altura normal, con la portería
+	# agrandada un disparo podía cruzar por donde se VE el larguero (más
+	# arriba) sin chocar con nada real ahí -bug reportado: el hitbox agrandado
+	# "no funciona bien"-. Se coloca con el mismo centro que antes (12px de
+	# grosor, borde de abajo en top_y).
+	var crossbar: StaticBody2D = _goal_crossbar_bodies["left" if left else "right"]
+	crossbar.position.y = top_y - 6.0
 
 func _set_effect(key: String, duration: float, node: Node = null) -> void:
 	if _effects.has(key):
@@ -1427,13 +1883,23 @@ func _clear_effects() -> void:
 func _update_score_hud() -> void:
 	_score_label.text = "%s   %d - %d   %s" % [GameState.p1.name, p1_score, p2_score, GameState.p2.name]
 
+## Segundos que quedan de LA PARTE ACTUAL (no del partido entero), contando
+## siempre hacia abajo desde la duración de una parte -antes mostraba
+## minuto:segundo del partido completo-. time_left nunca se reinicia entre
+## partes (ver _process/_apply_second_half), así que en la primera parte va
+## de match_duration/2 a 0 y en la segunda ya está directamente en ese rango;
+## solo hay que restar la mitad mientras la primera parte siga en marcha
+## (halftime_done aún a false). Durante el descanso en sí (in_halftime) esta
+## función ni se llama -play_locked corta _process antes de llegar aquí-, el
+## texto de "PITI TIME" se pone directamente en _apply_start_halftime.
 func _update_time_hud() -> void:
 	if sudden_death:
 		_time_label.text = "MUERTE SÚBITA"
-	else:
-		var m := int(time_left) / 60
-		var s := int(time_left) % 60
-		_time_label.text = "%d:%02d" % [m, s]
+		return
+	var half_len := GameState.match_duration / 2.0
+	var secs := int(time_left) if halftime_done else int(time_left - half_len)
+	var half_label := "P2" if halftime_done else "P1"
+	_time_label.text = "%s   %02d:%02d" % [half_label, secs / 60, secs % 60]
 
 func _announce(text: String) -> void:
 	_announce_label.text = text
