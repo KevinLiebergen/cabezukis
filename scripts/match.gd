@@ -321,6 +321,18 @@ func _add_goal_backstop(is_left: bool) -> void:
 ## gol, el otro no hace nada porque _on_goal ya corta en cuanto play_locked
 ## queda a true.
 const GOAL_AREA_FRONT_FRAC := 1.0
+## El borde de arriba del trapecio empezaba justo en la Y del larguero (o de
+## top_y con la portería agrandada, ver _set_goal_enlarged): como el larguero
+## físico (_goal_crossbar_bodies) es sólido y el balón tiene radio, un balón
+## simplemente apoyado/rebotando en su cara de ABAJO ya tiene el CENTRO por
+## debajo de esa Y -entra en el trapecio sin haber pasado de verdad el
+## larguero-, así que a veces un rebote en la barra Y un gol saltaban a la
+## vez, y ganaba el que se procesara antes -bug reportado: "a veces da al
+## larguero y se detecta como gol, y rebota igual que si no lo fuera", tanto
+## en tamaño normal como agrandado-. Este margen aparta el trapecio hacia
+## abajo lo que mide el balón, para que haga falta estar de verdad por
+## debajo del larguero (no solo tocando su canto) para que cuente el gol.
+const GOAL_AREA_BAR_CLEARANCE := Ball.BASE_RADIUS
 var _goal_area_polys: Dictionary = {}
 
 func _add_goal_area(is_left: bool) -> void:
@@ -336,10 +348,10 @@ func _add_goal_area(is_left: bool) -> void:
 	area.collision_mask = 2  # balón
 	var poly := CollisionPolygon2D.new()
 	poly.polygon = PackedVector2Array([
-		Vector2(x_top, CROSSBAR_Y),
+		Vector2(x_top, CROSSBAR_Y + GOAL_AREA_BAR_CLEARANCE),
 		Vector2(x_floor, FLOOR_Y),
 		Vector2(front_floor, FLOOR_Y),
-		Vector2(front_top, CROSSBAR_Y),
+		Vector2(front_top, CROSSBAR_Y + GOAL_AREA_BAR_CLEARANCE),
 	])
 	area.add_child(poly)
 	area.body_entered.connect(func(body): _on_goal(body, is_left))
@@ -1828,12 +1840,13 @@ func _set_goal_enlarged(left: bool, enlarged: bool) -> void:
 	shape.a = Vector2(shape.a.x, top_y)
 	# La zona de gol (ver _add_goal_area) también tiene que subir su borde de
 	# arriba en sintonía: sus dos puntos "altos" (índices 0 y 3, a la altura
-	# del larguero) suben igual que el tramo diagonal; los dos "bajos" (en el
-	# suelo) no cambian.
+	# del larguero, con el mismo margen GOAL_AREA_BAR_CLEARANCE de siempre)
+	# suben igual que el tramo diagonal; los dos "bajos" (en el suelo) no
+	# cambian.
 	var poly: CollisionPolygon2D = _goal_area_polys["left" if left else "right"]
 	var pts: PackedVector2Array = poly.polygon
-	pts[0] = Vector2(pts[0].x, top_y)
-	pts[3] = Vector2(pts[3].x, top_y)
+	pts[0] = Vector2(pts[0].x, top_y + GOAL_AREA_BAR_CLEARANCE)
+	pts[3] = Vector2(pts[3].x, top_y + GOAL_AREA_BAR_CLEARANCE)
 	poly.polygon = pts
 	# El larguero físico (el único elemento sólido que puede hacer que un
 	# disparo "rebote sin marcar" en vez de entrar) tiene que subir tanto como

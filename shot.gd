@@ -248,6 +248,26 @@ func _ready() -> void:
 				" score=", m.p1_score, "-", m.p2_score)
 		tree.quit()
 		return
+	if OS.get_environment("SHOT_NORMAL_CROSSBAR_TEST") == "1":
+		# Portería SIN agrandar: un disparo que cae justo encima del larguero
+		# debe rebotar sin marcar -bug reportado: "a veces da al larguero y se
+		# detecta como gol, y rebota igual que si no lo fuera", tanto en
+		# tamaño normal como agrandado-. CROSSBAR_Y=414.4, larguero físico
+		# ocupa 402.4..414.4 en x<GOAL_W=150.
+		await tree.create_timer(1.0).timeout
+		var m = tree.root.get_node("Match")
+		m.play_locked = false
+		m.p1_head.global_position = Vector2(640, 566.4)
+		m.p2_head.global_position = Vector2(900, 566.4)
+		m.ball.reset_at(Vector2(100, 250))
+		m.ball.linear_velocity = Vector2(0, 300)
+		for i in 20:
+			await tree.create_timer(0.05).timeout
+			print("t=", (i + 1) * 0.05, " ball=", m.ball.global_position.round(),
+				" vel=", m.ball.linear_velocity.round(),
+				" score=", m.p1_score, "-", m.p2_score)
+		tree.quit()
+		return
 	if OS.get_environment("SHOT_COUNTDOWN_BALL_TEST") == "1":
 		# El balón no debería moverse (BALL_SPAWN=(640,220), caería por
 		# gravedad si no está congelado) durante el "3, 2, 1", solo soltarse
