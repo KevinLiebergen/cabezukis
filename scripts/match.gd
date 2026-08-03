@@ -301,13 +301,14 @@ func _add_goal_backstop(is_left: bool) -> void:
 	add_child(jump_wall)
 
 ## Zona (no solo la línea diagonal de la red) que cuenta como gol si el balón
-## está dentro: un trapecio desde el fondo de la red hasta la propia boca
-## (GOAL_AREA_FRONT_FRAC=1.0, el mismo x que el poste/larguero físico), a toda
-## la altura desde el larguero hasta el suelo -exactamente "por debajo del
-## larguero", como una portería de verdad-. Sin esto, un balón que entra por
-## arriba cerca del poste y se queda ahí sin llegar a tocar exactamente la
-## línea diagonal del fondo -bug reportado, sobre todo con la portería
-## agrandada, donde la boca es más alta- nunca contaba como gol.
+## está dentro: un trapecio desde el fondo de la red hasta cerca de la propia
+## boca (ver GOAL_AREA_FRONT_CLEARANCE, que retrasa el borde de entrada un
+## diámetro de balón desde el poste/larguero físico), a toda la altura desde
+## el larguero hasta el suelo -exactamente "por debajo del larguero", como
+## una portería de verdad-. Sin esto, un balón que entra por arriba cerca del
+## poste y se queda ahí sin llegar a tocar exactamente la línea diagonal del
+## fondo -bug reportado, sobre todo con la portería agrandada, donde la boca
+## es más alta- nunca contaba como gol.
 ##
 ## Antes llegaba solo hasta la mitad (0.5) para no contar el gol "demasiado
 ## pronto" (antes de que el balón entrase visualmente del todo); prioridad
@@ -321,6 +322,18 @@ func _add_goal_backstop(is_left: bool) -> void:
 ## gol, el otro no hace nada porque _on_goal ya corta en cuanto play_locked
 ## queda a true.
 const GOAL_AREA_FRONT_FRAC := 1.0
+## Antes el borde de entrada del trapecio coincidía exactamente con el poste/
+## larguero físico (GOAL_AREA_FRONT_FRAC aplicado directamente sobre near_x):
+## como Area2D dispara body_entered en cuanto el balón EMPIEZA a solaparse
+## -su borde de ataque, un radio por delante del centro, no el balón entero-,
+## un balón que solo asomaba por la boca sin haber pasado de verdad al otro
+## lado del poste (y que a veces acababa rebotando hacia fuera) ya contaba
+## como gol -bug reportado: "se detecta gol cuando se da en el poste de la
+## portería", queriendo decir que cuente solo si la pelota pasa ENTERA al
+## otro lado-. Retrasar el borde un diámetro completo (dos radios) hace que
+## ese primer contacto ya deje el balón entero -borde de salida incluido-
+## dentro, es decir, que haya cruzado el poste del todo.
+const GOAL_AREA_FRONT_CLEARANCE := Ball.BASE_RADIUS * 2.0
 ## El borde de arriba del trapecio empezaba justo en la Y del larguero (o de
 ## top_y con la portería agrandada, ver _set_goal_enlarged): como el larguero
 ## físico (_goal_crossbar_bodies) es sólido y el balón tiene radio, un balón
@@ -332,8 +345,21 @@ const GOAL_AREA_FRONT_FRAC := 1.0
 ## en tamaño normal como agrandado-. Este margen aparta el trapecio hacia
 ## abajo lo que mide el balón, para que haga falta estar de verdad por
 ## debajo del larguero (no solo tocando su canto) para que cuente el gol.
-const GOAL_AREA_BAR_CLEARANCE := Ball.BASE_RADIUS
+##
+## Se recalcula con el radio ACTUAL del balón, no uno fijo, y se actualiza en
+## caliente (ver _update_goal_area_bar_y) tanto al cambiar el tamaño de
+## portería (_set_goal_enlarged) como al cambiar el tamaño del balón
+## (Powerup.Type.BIG_BALL, ver _apply_powerup_effect/_expire_effect): con un
+## margen fijo pensado solo para el radio base, la pelota agrandada (bastante
+## más grande) ya tenía el centro por debajo del margen con solo tocar la
+## barra, sin haber entrado de verdad -mismo bug de antes, reaparecido solo
+## con la pelota agrandada-.
 var _goal_area_polys: Dictionary = {}
+## Factor de agrandado de portería vigente por lado (1.0 = normal), guardado
+## aparte de FieldArt/GoalFront porque _update_goal_area_bar_y necesita
+## recalcular top_y bajo demanda (al cambiar el tamaño del balón, no solo el
+## de la portería) sin depender de qué otro sistema lo pidió primero.
+var _goal_scale_factor: Dictionary = {"left": 1.0, "right": 1.0}
 
 func _add_goal_area(is_left: bool) -> void:
 	var near_x := GOAL_W if is_left else W - GOAL_W
@@ -341,22 +367,42 @@ func _add_goal_area(is_left: bool) -> void:
 	var depth := FieldArt.goal_depth()
 	var x_top := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_TOP)
 	var x_floor := near_x + s * depth * (1.0 - FieldArt.NET_BACK_FRAC_FLOOR)
-	var front_top: float = lerp(x_top, near_x, GOAL_AREA_FRONT_FRAC)
-	var front_floor: float = lerp(x_floor, near_x, GOAL_AREA_FRONT_FRAC)
+	var front_edge := near_x + s * GOAL_AREA_FRONT_CLEARANCE
+	var front_top: float = lerp(x_top, front_edge, GOAL_AREA_FRONT_FRAC)
+	var front_floor: float = lerp(x_floor, front_edge, GOAL_AREA_FRONT_FRAC)
 	var area := Area2D.new()
 	area.collision_layer = 0
 	area.collision_mask = 2  # balón
 	var poly := CollisionPolygon2D.new()
+	# El margen de la Y de arriba usa Ball.BASE_RADIUS aquí porque el balón
+	# (creado en _build_actors, después de _build_field) todavía no existe en
+	# este punto; siempre arranca a tamaño base, así que es el valor correcto
+	# hasta que algo lo cambie -ver _update_goal_area_bar_y para cuando sí.
 	poly.polygon = PackedVector2Array([
-		Vector2(x_top, CROSSBAR_Y + GOAL_AREA_BAR_CLEARANCE),
+		Vector2(x_top, CROSSBAR_Y + Ball.BASE_RADIUS),
 		Vector2(x_floor, FLOOR_Y),
 		Vector2(front_floor, FLOOR_Y),
-		Vector2(front_top, CROSSBAR_Y + GOAL_AREA_BAR_CLEARANCE),
+		Vector2(front_top, CROSSBAR_Y + Ball.BASE_RADIUS),
 	])
 	area.add_child(poly)
 	area.body_entered.connect(func(body): _on_goal(body, is_left))
 	add_child(area)
 	_goal_area_polys["left" if is_left else "right"] = poly
+
+## Recalcula el borde de arriba del trapecio (puntos 0 y 3, ver _add_goal_area)
+## con el factor de portería y el radio de balón VIGENTES en este instante,
+## sea cual sea el que acaba de cambiar. Ver el comentario sobre el margen
+## bajo el larguero, encima de _add_goal_area, para el porqué.
+func _update_goal_area_bar_y(left: bool) -> void:
+	var factor: float = _goal_scale_factor["left" if left else "right"]
+	var floor_bottom := FLOOR_Y + FieldArt.SUBMERGE
+	var gh := (floor_bottom - CROSSBAR_Y) * factor
+	var top_y := floor_bottom - gh
+	var poly: CollisionPolygon2D = _goal_area_polys["left" if left else "right"]
+	var pts: PackedVector2Array = poly.polygon
+	pts[0] = Vector2(pts[0].x, top_y + ball.radius)
+	pts[3] = Vector2(pts[3].x, top_y + ball.radius)
+	poly.polygon = pts
 
 func _build_actors() -> void:
 	ball = Ball.new()
@@ -1777,6 +1823,11 @@ func _apply_powerup_effect(type: Powerup.Type, who: Head, rival: Head) -> void:
 	match type:
 		Powerup.Type.BIG_BALL:
 			ball.set_radius(Ball.BASE_RADIUS * 1.7)
+			# Con la pelota agrandada hace falta más margen bajo el larguero
+			# para que tocarlo no cuente como gol, ver el comentario sobre ese
+			# margen encima de _add_goal_area en la zona de gol.
+			_update_goal_area_bar_y(true)
+			_update_goal_area_bar_y(false)
 			_set_effect("ball_size", POWERUP_DURATION)
 			_announce("¡PELOTA GIGANTE!")
 		Powerup.Type.BIG_GOAL:
@@ -1824,6 +1875,7 @@ const GOAL_ENLARGE_FACTOR := 1.6
 ## también la boca más alta que deja una portería agrandada.
 func _set_goal_enlarged(left: bool, enlarged: bool) -> void:
 	var factor := GOAL_ENLARGE_FACTOR if enlarged else 1.0
+	_goal_scale_factor["left" if left else "right"] = factor
 	_field_art.set_goal_scale(left, factor)
 	_goal_front.set_goal_scale(left, factor)
 	# La red (tramo de red que dispara el gol, ver _add_goal_backstop) tiene
@@ -1840,14 +1892,10 @@ func _set_goal_enlarged(left: bool, enlarged: bool) -> void:
 	shape.a = Vector2(shape.a.x, top_y)
 	# La zona de gol (ver _add_goal_area) también tiene que subir su borde de
 	# arriba en sintonía: sus dos puntos "altos" (índices 0 y 3, a la altura
-	# del larguero, con el mismo margen GOAL_AREA_BAR_CLEARANCE de siempre)
-	# suben igual que el tramo diagonal; los dos "bajos" (en el suelo) no
-	# cambian.
-	var poly: CollisionPolygon2D = _goal_area_polys["left" if left else "right"]
-	var pts: PackedVector2Array = poly.polygon
-	pts[0] = Vector2(pts[0].x, top_y + GOAL_AREA_BAR_CLEARANCE)
-	pts[3] = Vector2(pts[3].x, top_y + GOAL_AREA_BAR_CLEARANCE)
-	poly.polygon = pts
+	# del larguero) suben igual que el tramo diagonal; los dos "bajos" (en el
+	# suelo) no cambian. Ver _update_goal_area_bar_y para el cálculo (usa el
+	# radio ACTUAL del balón, no uno fijo).
+	_update_goal_area_bar_y(left)
 	# El larguero físico (el único elemento sólido que puede hacer que un
 	# disparo "rebote sin marcar" en vez de entrar) tiene que subir tanto como
 	# el dibujo: si se quedaba siempre a la altura normal, con la portería
@@ -1869,6 +1917,8 @@ func _expire_effect(key: String) -> void:
 	match key:
 		"ball_size":
 			ball.set_radius(Ball.BASE_RADIUS)
+			_update_goal_area_bar_y(true)
+			_update_goal_area_bar_y(false)
 		"bouncy":
 			ball.set_bounciness(Ball.BASE_BOUNCE)
 		"low_grav":

@@ -28,30 +28,43 @@ const RADIUS := 33.6
 const FOOT_SCALE := 1.08
 
 ## Ajustes de la IA por nivel de dificultad.
+## speed_mult SIEMPRE a tope (1.0, la misma velocidad que el jugador) en los
+## tres niveles a propósito -antes "facil"/"media" corrían más lento, pero
+## eso se sentía como un hándicap artificial ("se mueve como a cámara lenta")
+## en vez de una IA peor de verdad. Lo único que cambia entre niveles es
+## reaction_min/var (cuánto tarda en darse cuenta de hacia dónde hay que ir,
+## ver _cpu_think) y predict (cuánto anticipa hacia dónde va el balón según su
+## velocidad): así en fácil llega tarde y mal colocada aunque corra a la
+## misma velocidad que tú, y en difícil llega igual de rápido pero antes y
+## mejor situada -diferencia de habilidad, no de físico-. jump_chance y
+## kick_chance se dejan iguales en los tres para no mezclar un segundo eje de
+## dificultad aparte. "dificil" se baja un poco también (antes 0.08/0.08/0.12)
+## para que los tres niveles sean divertidos según la habilidad de cada
+## jugador, no solo el más flojo.
 const CPU_DIFFICULTY := {
 	"facil": {
-		"speed_mult": 0.8,
-		"reaction_min": 0.16,
-		"reaction_var": 0.16,
-		"predict": 0.04,
-		"jump_chance": 0.32,
-		"kick_chance": 0.32,
+		"speed_mult": 1.0,
+		"reaction_min": 0.30,
+		"reaction_var": 0.22,
+		"predict": 0.0,
+		"jump_chance": 0.45,
+		"kick_chance": 0.42,
 	},
 	"media": {
-		"speed_mult": 0.9,
-		"reaction_min": 0.12,
-		"reaction_var": 0.12,
-		"predict": 0.08,
-		"jump_chance": 0.44,
-		"kick_chance": 0.41,
+		"speed_mult": 1.0,
+		"reaction_min": 0.18,
+		"reaction_var": 0.14,
+		"predict": 0.05,
+		"jump_chance": 0.45,
+		"kick_chance": 0.42,
 	},
 	"dificil": {
 		"speed_mult": 1.0,
-		"reaction_min": 0.08,
-		"reaction_var": 0.08,
-		"predict": 0.12,
-		"jump_chance": 0.55,
-		"kick_chance": 0.5,
+		"reaction_min": 0.10,
+		"reaction_var": 0.10,
+		"predict": 0.10,
+		"jump_chance": 0.45,
+		"kick_chance": 0.42,
 	},
 }
 
@@ -353,7 +366,21 @@ func _physics_process(delta: float) -> void:
 			# cada bote del balón y daba empujes demasiado desiguales de un
 			# frame a otro, dejando a veces muy poca separación horizontal
 			# -dejaba alcanzar y atravesar al cabezudo que se acercaba-).
-			var away := Vector2(signf(to_ball.x), 0.0) if absf(to_ball.x) > 1.0 else Vector2(facing, 0.0)
+			#
+			# El hitbox es el mismo círculo (RADIUS) en toda la cabeza -no hay
+			# ninguna zona con una forma de contacto distinta-, pero antes esta
+			# línea sí que reaccionaba distinto según la zona: usaba signf(x),
+			# que da +1 o -1 en seco en cuanto to_ball.x cruza 0. Un balón que
+			# cae casi justo encima (arriba/coronilla) tiene to_ball.x
+			# oscilando muy cerca de 0 de un frame a otro por el propio rebote
+			# redondo de la cabeza, así que signf() lo mandaba entero a un lado
+			# y al frame siguiente entero al otro -bug reportado: "por la parte
+			# de arriba... rebota raro"-. clampf en vez de signf da un empuje
+			# horizontal que crece poco a poco según el balón se aparta del
+			# centro, en vez de invertirse de golpe: cerca de la coronilla sale
+			# casi recto hacia arriba (cabezazo de verdad) y solo se inclina
+			# del todo a un lado cuando el contacto ya es realmente lateral.
+			var away := Vector2(clampf(to_ball.x / RADIUS, -1.0, 1.0), 0.0)
 			var header_dir := (away + Vector2(0.0, -0.5)).normalized()
 			var incoming := maxf(0.0, -_ball.linear_velocity.dot(away))
 			var push_speed := clampf(230.0 + incoming * 0.6, 230.0, 520.0)
