@@ -184,8 +184,12 @@ func _update_featured(mine: bool, id: String) -> void:
 # ---------------- Filas de selección ----------------
 
 ## Nombres que van al grupo "LEGENDARIOS" en vez de al grupo normal
-## "CABEZUKIS" (por ahora, solo La Matriarca).
-const LEGENDARY_NAMES := ["La Matriarca"]
+## "CABEZUKIS". El ORDEN de esta lista es también el orden en que aparecen
+## sus tarjetas (ver el sort_custom en _player_row): sin eso, el orden
+## dependería de en qué orden devuelve el sistema de archivos las carpetas de
+## bundled_players/, que no tiene por qué coincidir con este -Mawii tiene que
+## quedar a la derecha de La Matriarca pase lo que pase.
+const LEGENDARY_NAMES := ["La Matriarca", "Mawii"]
 
 ## Antes era una fila que desbordaba en scroll horizontal: con más de un
 ## puñado de jugadores, las últimas tarjetas quedaban cortadas a la mitad en
@@ -199,6 +203,10 @@ const LEGENDARY_NAMES := ["La Matriarca"]
 func _player_row(mine: bool) -> VBoxContainer:
 	var normal := PlayerDB.players.filter(func(p): return not (p.name in LEGENDARY_NAMES))
 	var legendary := PlayerDB.players.filter(func(p): return p.name in LEGENDARY_NAMES)
+	# Orden fijo según LEGENDARY_NAMES, no el de llegada desde PlayerDB.players
+	# (que sigue el orden de carpetas en bundled_players/, fuera de nuestro
+	# control): así Mawii siempre queda a la derecha de La Matriarca.
+	legendary.sort_custom(func(a, b): return LEGENDARY_NAMES.find(a.name) < LEGENDARY_NAMES.find(b.name))
 
 	var vb := VBoxContainer.new()
 	# Separación entre cajas de grupo (CABEZUKIS / LEGENDARIOS): más que la
