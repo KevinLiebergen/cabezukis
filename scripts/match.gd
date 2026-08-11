@@ -902,21 +902,24 @@ func _refresh_mini_powerup_row(row: HBoxContainer, held: Array, used: Array) -> 
 ## reales por mucho que se cambie BTN_SIZE aquí, y con centros tan juntos
 ## como marca BTN_GAP acaban solapándose y saliéndose de la pantalla —tal
 ## cual el bug reportado.
-## Antes 60/24/50: botones más grandes y con más margen a los bordes (izq. y
-## dcha.), aprovechando el hueco que deja abajo el campo más pequeño/subido
-## (ver FLOOR_Y). GAP escalado en la misma proporción que SIZE (84/60) para
-## conservar el mismo margen relativo entre zonas de toque contiguas.
-const BTN_SIZE := 84.0
-const BTN_SAFE_MARGIN := 40.0  # margen a los bordes de la pantalla (safe area)
+## Antes 60/24/50 y luego 84/70/40: botones más grandes y con más margen a los
+## bordes (izq. y dcha.), aprovechando el hueco que deja abajo el campo más
+## pequeño/subido (ver FLOOR_Y). GAP escalado en la misma proporción que SIZE
+## para conservar el mismo margen relativo entre zonas de toque contiguas; el
+## margen inferior se recorta un poco (40 -> 30) para que el icono más grande
+## no invada el terreno de juego más de lo que ya lo hacía.
+const BTN_SIZE := 112.0
+const BTN_SAFE_MARGIN := 30.0  # margen a los bordes de la pantalla (safe area)
 ## Hueco entre botones contiguos: bastante más que el tamaño del icono en sí,
 ## a propósito, para dejar sitio a una zona de toque bien más grande que el
 ## icono (ver BTN_TOUCH_SCALE) sin que las de dos botones vecinos lleguen a
 ## tocarse. Con solo 2+2 botones (ya no hay disparo raso) sobra hueco lateral
 ## de sitio para permitírselo.
-const BTN_GAP := 70.0
+const BTN_GAP := 78.0
 ## La zona de toque real (invisible) mide BTN_SIZE * este factor: más grande
 ## que el propio icono para que sea fácil acertar sin tener que agrandar el
-## dibujo. Con BTN_GAP=50 deja ~20px de margen hasta la zona del vecino.
+## dibujo. Con SIZE=112/GAP=78 los centros quedan a 190 y cada zona mide 168,
+## así que sigue habiendo ~22px de aire hasta la zona del vecino.
 const BTN_TOUCH_SCALE := 1.5
 
 const BTN_TEXTURES := {
