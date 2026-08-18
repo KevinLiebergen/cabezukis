@@ -902,25 +902,29 @@ func _refresh_mini_powerup_row(row: HBoxContainer, held: Array, used: Array) -> 
 ## reales por mucho que se cambie BTN_SIZE aquí, y con centros tan juntos
 ## como marca BTN_GAP acaban solapándose y saliéndose de la pantalla —tal
 ## cual el bug reportado.
-## Antes 60/24/50 y luego 84/70/40: botones más grandes y con más margen a los
-## bordes (izq. y dcha.), aprovechando el hueco que deja abajo el campo más
-## pequeño/subido (ver FLOOR_Y). GAP escalado en la misma proporción que SIZE
-## para conservar el mismo margen relativo entre zonas de toque contiguas; el
-## margen inferior se recorta un poco (40 -> 30) para que el icono más grande
-## no invada el terreno de juego más de lo que ya lo hacía.
-const BTN_SIZE := 112.0
-const BTN_SAFE_MARGIN := 30.0  # margen a los bordes de la pantalla (safe area)
-## Hueco entre botones contiguos: bastante más que el tamaño del icono en sí,
-## a propósito, para dejar sitio a una zona de toque bien más grande que el
-## icono (ver BTN_TOUCH_SCALE) sin que las de dos botones vecinos lleguen a
-## tocarse. Con solo 2+2 botones (ya no hay disparo raso) sobra hueco lateral
-## de sitio para permitírselo.
-const BTN_GAP := 78.0
+## Antes 60/24/50 y luego 84/70/40 y 112/30/78: se probó a agrandarlos mucho,
+## pero acababan tapando a los cabezudos y quedaban muy separados dentro de
+## cada pareja (mover / disparo+salto). Ahora se vuelve a un tamaño más
+## discreto y un hueco entre pareja más estándar (icono + un margen pequeño,
+## no casi el doble del icono como antes), compensando el tacto más pequeño
+## con BTN_TOUCH_SCALE para que la zona pulsable siga siendo cómoda.
+const BTN_SIZE := 76.0
+const BTN_SAFE_MARGIN := 24.0  # margen a los bordes de la pantalla (safe area)
+## Hueco entre los dos botones de una misma pareja (izq/dcha o disparo/salto):
+## una fracción pequeña del icono (antes casi el doble del icono, de ahí que
+## en la esquina derecha se vieran tan separados).
+const BTN_GAP := 26.0
 ## La zona de toque real (invisible) mide BTN_SIZE * este factor: más grande
-## que el propio icono para que sea fácil acertar sin tener que agrandar el
-## dibujo. Con SIZE=112/GAP=78 los centros quedan a 190 y cada zona mide 168,
-## así que sigue habiendo ~22px de aire hasta la zona del vecino.
-const BTN_TOUCH_SCALE := 1.5
+## que el propio icono para que siga siendo fácil acertar aunque el dibujo se
+## haya encogido. Con SIZE=76/GAP=26 los centros quedan a 102 y cada zona mide
+## ~99 (76*1.3), así que las dos zonas de una pareja no llegan a solaparse
+## -importante en el par izquierda/derecha: si se tocaran, un dedo en el
+## límite podría activar los dos sentidos de movimiento a la vez-.
+const BTN_TOUCH_SCALE := 1.3
+## Transparencia del icono en reposo: semitransparente para que se vea el
+## campo/los cabezudos por debajo; al pulsar sube la opacidad como feedback.
+const BTN_ALPHA_IDLE := 0.55
+const BTN_ALPHA_PRESSED := 0.85
 
 const BTN_TEXTURES := {
 	"left": "res://buttons/boton_izquierda.png",
@@ -970,7 +974,8 @@ func _make_touch_button(kind: String, pos: Vector2) -> TouchScreenButton:
 	var native_size: float = tex.get_width()
 	var base_scale := BTN_SIZE / native_size
 	btn.scale = Vector2.ONE * base_scale
-	# Feedback de "pulsado": un pelín más grande (+2%) y más claro (+5%), en
+	btn.modulate = Color(1, 1, 1, BTN_ALPHA_IDLE)
+	# Feedback de "pulsado": un pelín más grande (+2%) y más opaco/claro, en
 	# vez de una textura aparte generada con Image.get_image()/set_pixel en
 	# tiempo de ejecución -esa vía dependía de poder leer la textura de
 	# vuelta a la CPU, algo que en Android puede fallar según cómo quede
@@ -980,10 +985,10 @@ func _make_touch_button(kind: String, pos: Vector2) -> TouchScreenButton:
 	# plataforma.
 	btn.pressed.connect(func():
 		btn.scale = Vector2.ONE * (base_scale * 1.02)
-		btn.modulate = Color(1.05, 1.05, 1.05))
+		btn.modulate = Color(1.05, 1.05, 1.05, BTN_ALPHA_PRESSED))
 	btn.released.connect(func():
 		btn.scale = Vector2.ONE * base_scale
-		btn.modulate = Color.WHITE)
+		btn.modulate = Color(1, 1, 1, BTN_ALPHA_IDLE))
 	var shape := RectangleShape2D.new()
 	shape.size = Vector2.ONE * (native_size * BTN_TOUCH_SCALE)
 	btn.shape = shape
