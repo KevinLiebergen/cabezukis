@@ -1057,13 +1057,38 @@ func _resolve_ball_single_overlap() -> void:
 			continue  # apretón de verdad, lo resuelve _resolve_ball_tunnel
 		var diff: Vector2 = ball.global_position - head.global_position
 		var dist: float = diff.length()
-		# Mismo umbral que el cabeceo por proximidad de head.gd (RADIUS +
-		# ball.radius - 2): si ya está lo bastante cerca para que head.gd lo
-		# cabecee este mismo frame (esta función corre DESPUÉS, ver
-		# physics_frame), no bloquea ese cabeceo -sale justo hasta el borde
-		# de esa misma zona de contacto, ni un pixel más lejos-.
-		if dist > 0.001 and dist < combined - 2.0:
-			ball.global_position = head.global_position + diff.normalized() * combined
+		# OJO: este umbral tiene que quedar CLARAMENTE por debajo del umbral
+		# de cabeceo de head.gd (RADIUS + ball.radius - 2, combined - 2 aquí
+		# mismo), no igualarlo. Con los dos iguales (como estaba antes,
+		# combined - 2 en ambos sitios) un balón que llegaba frenándose poco
+		# a poco (por gravedad/rebote de suelo, no un cabezazo) podía quedar
+		# asentado justo en esa frontera compartida -confirmado con
+		# SHOT_RUNTHROUGH_TEST: distancia mínima real 54.0005 contra un
+		# umbral de "< 54.0"- sin cruzarla nunca del todo: ni dispara el
+		# cabeceo de head.gd (que necesita dist < 54 estricto) ni esta
+		# función lo re-coloca (dist ya no es < 54 tampoco), así que el
+		# balón queda solapando visualmente la cabeza sin que pase nada -bug
+		# reportado: "las físicas siguen siendo raras"-. Dejando 8px de
+		# margen en vez de 2 le da a head.gd sitio de sobra para cabecearlo
+		# de verdad antes de que este tope geométrico entre en juego.
+		if dist > 0.001 and dist < combined - 8.0:
+			var outward := diff / dist
+			# Si el balón YA se aleja de verdad por su cuenta (impulso de
+			# cabeceo recién aplicado, con suficiente componente hacia fuera),
+			# no lo reclavemos en el borde: eso es lo que le cortaba el
+			# rebote real -reclavar la posición cada frame no toca la
+			# velocidad, así que un balón con velocidad de salida alta se
+			# quedaba con la posición congelada en el borde mientras esa
+			# velocidad se comía sola por fricción, en vez de separarse- (bug
+			# reportado: "el balón se queda pegado/no rebota tras un
+			# cabezazo fuerte"). Solo sigue aplicando este tope geométrico a
+			# un balón que de verdad está quieto o entrando (velocidad de
+			# salida por debajo de este umbral, p.ej. apoyado o en un
+			# solape real de tunneling), que es el caso que esta función
+			# existe para cubrir.
+			if ball.linear_velocity.dot(outward) > 40.0:
+				continue
+			ball.global_position = head.global_position + outward * combined
 
 ## SOLO para el apretón de verdad: los dos cabezudos tocando el balón A LA
 ## VEZ, cerrando desde lados opuestos (arrastrándolo entre los dos, no un
@@ -1197,7 +1222,8 @@ func _process(delta: float) -> void:
 ## llevar así antes de forzar un rebote hacia el campo -si no, podía quedarse
 ## ahí el resto del tiempo, fuera de juego.
 const BALL_STUCK_SPEED := 12.0
-const BALL_STUCK_TIME := 1.2
+## Antes 1.2: petición del usuario, que no tarde tanto en saltar del larguero.
+const BALL_STUCK_TIME := 0.5
 var _ball_stuck_timer := 0.0
 
 func _check_ball_stuck(delta: float) -> void:
@@ -1211,12 +1237,14 @@ func _check_ball_stuck(delta: float) -> void:
 		_ball_stuck_timer += delta
 		if _ball_stuck_timer >= BALL_STUCK_TIME:
 			_ball_stuck_timer = 0.0
-			# Empuje hacia el centro del campo (no solo hacia arriba: si no,
-			# podía volver a caer sobre el mismo larguero) y hacia arriba para
-			# despegarlo de la barra.
+			# Empuje sobre todo hacia arriba (antes salía más hacia el centro
+			# del campo que hacia arriba -520 horizontal contra 260 vertical,
+			# petición del usuario: "que salte más hacia arriba no tan hacia
+			# la portería contraria"-), con solo el horizontal justo para no
+			# volver a caer sobre el mismo larguero.
 			var dir := 1.0 if on_left_bar else -1.0
 			ball.linear_velocity = Vector2.ZERO
-			ball.apply_central_impulse(Vector2(dir * 520.0, -260.0))
+			ball.apply_central_impulse(Vector2(dir * 200.0, -520.0))
 	else:
 		_ball_stuck_timer = 0.0
 

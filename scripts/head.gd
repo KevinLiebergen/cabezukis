@@ -68,9 +68,19 @@ const CPU_DIFFICULTY := {
 	},
 }
 
-var move_speed := 360.0
+## Antes 360: petición del usuario, ritmo más pausado tipo Head Ball 2 en vez
+## del más arcade de antes. Afecta igual a humano e IA (speed_mult de la IA
+## sigue a tope en los tres niveles, ver CPU_DIFFICULTY -la dificultad la da
+## la reacción/anticipación, no la velocidad-), así que la comparación
+## relativa entre ambos no cambia, solo el ritmo general del partido.
+var move_speed := 280.0
 var jump_speed := -950.0
-var kick_power := 1000.0
+## Antes 1000: bajado junto con Ball.MAX_SPEED para que el chut siga siendo
+## claramente más rápido que un toque/cabeceo normal (230 de base, sin tocar,
+## ver más abajo) pero sin ser una diferencia enorme -petición del usuario:
+## "que se acelere más que cuando se da simplemente, pero tampoco muchísimo,
+## para facilitar la sensación de control"-. Ratio resultante ~3x.
+var kick_power := 700.0
 var facing := 1  # 1 = mira a la derecha (equipo izquierdo)
 var is_cpu := false
 ## Solo relevante en el servidor de una partida online: el input no viene de
@@ -383,7 +393,24 @@ func _physics_process(delta: float) -> void:
 			var away := Vector2(clampf(to_ball.x / RADIUS, -1.0, 1.0), 0.0)
 			var header_dir := (away + Vector2(0.0, -0.5)).normalized()
 			var incoming := maxf(0.0, -_ball.linear_velocity.dot(away))
-			var push_speed := clampf(230.0 + incoming * 0.6, 230.0, 520.0)
+			# El empuje tiene que GANAR siempre a la velocidad de entrada, no
+			# solo suavizarla: header_dir solo proyecta ~0.894 de push_speed
+			# sobre el eje de "away" (por la mezcla con el -0.5 vertical), así
+			# que con el multiplicador y el tope antiguos (0.6, 520) un balón
+			# que llegara a más de ~465px/s conservaba parte de su velocidad
+			# de entrada tras el "rebote". Esa cola de velocidad hacia dentro
+			# no se veía como tal -match.gd _resolve_ball_single_overlap
+			# reclavaba la posición al borde de la cabeza cada frame en vez de
+			# dejarlo entrar- así que el balón se quedaba pegado al borde,
+			# decayendo por fricción en vez de rebotar -bug reportado: "el
+			# balón se queda pegado/no rebota tras un cabezazo fuerte", y la
+			# razón real de que las defensas no paren casi ningún disparo con
+			# fuerza real (kick_power/MAX_SPEED de la bola, ver ball.gd/arriba)-.
+			# 1.3 deja margen sobrado sobre el 1.119 mínimo necesario (1/0.894)
+			# en todo el rango de disparo, y el tope (1700, por encima de
+			# Ball.MAX_SPEED=1100 con margen) sube con push_speed para no
+			# recortarlo de vuelta.
+			var push_speed := clampf(230.0 + incoming * 1.3, 230.0, 1700.0)
 			# Solo suma la carrera del cabezudo si va en la MISMA dirección
 			# que el empuje: si no, cuando el balón toca por detrás (pelo,
 			# nuca -no la cara- mientras el cabezudo corre hacia delante, en
@@ -392,7 +419,7 @@ func _physics_process(delta: float) -> void:
 			# -bug reportado: "en el pelo y la parte de atrás actúa raro,
 			# como que no rebota igual"-.
 			var carry := away * maxf(0.0, velocity.x * away.x) * 0.3
-			_ball.apply_central_impulse((header_dir * push_speed + carry).limit_length(560.0))
+			_ball.apply_central_impulse((header_dir * push_speed + carry).limit_length(1750.0))
 			# Antes esto llegaba por la señal touched_by_head del balón (su
 			# propia colisión física nativa con la cabeza, ver body_entered en
 			# ball.gd), que ya no existe: el sonido de golpeo se dispara aquí

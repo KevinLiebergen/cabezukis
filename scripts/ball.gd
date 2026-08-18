@@ -12,7 +12,10 @@ signal touched_goal_net(is_left: bool)
 ## Antes 28 (100%): 80% del tamaño original, en sintonía con los cabezudos
 ## (Head.RADIUS) y las porterías más pequeñas (ver match.gd/field_art.gd).
 const BASE_RADIUS := 22.4
-const MAX_SPEED := 1300.0
+## Antes 1300, luego 950 (demasiado lenta), luego 1100 (demasiado rápida de
+## vuelta). 1050 queda entre medias, más lenta que 1100 sin caer tanto como
+## los 950.
+const MAX_SPEED := 1050.0
 const BASE_BOUNCE := 0.78
 
 var radius := BASE_RADIUS
@@ -21,7 +24,13 @@ var _shape: CircleShape2D
 func _ready() -> void:
 	mass = 1.0
 	gravity_scale = 1.0
-	linear_damp = 0.15
+	# Antes 0.15: MAX_SPEED solo topa el pico de velocidad, pero casi ningún
+	# golpe llega a tocar ese techo -así que bajarlo apenas se nota "en
+	# general"-. Lo que de verdad rige cuánto tiempo se pasa la bola rodando
+	# rápido después de cualquier golpe (chut, cabeceo, rebote) es la
+	# fricción: más alta hace que pierda velocidad antes y se sienta más
+	# controlable, sin tocar la fuerza del primer impacto.
+	linear_damp = 0.4
 	angular_damp = 0.6
 	contact_monitor = true
 	max_contacts_reported = 6
