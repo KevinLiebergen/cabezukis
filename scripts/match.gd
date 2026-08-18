@@ -904,23 +904,24 @@ func _refresh_mini_powerup_row(row: HBoxContainer, held: Array, used: Array) -> 
 ## cual el bug reportado.
 ## Antes 60/24/50 y luego 84/70/40 y 112/30/78: se probó a agrandarlos mucho,
 ## pero acababan tapando a los cabezudos y quedaban muy separados dentro de
-## cada pareja (mover / disparo+salto). Ahora se vuelve a un tamaño más
-## discreto y un hueco entre pareja más estándar (icono + un margen pequeño,
-## no casi el doble del icono como antes), compensando el tacto más pequeño
-## con BTN_TOUCH_SCALE para que la zona pulsable siga siendo cómoda.
+## cada pareja (mover / disparo+salto). Con 76/24/26 (siguiente intento) el
+## icono quedó pequeño y cómodo, pero GAP=26 resultó demasiado justo para
+## atinar bien -de ahí el hueco más generoso de ahora-.
 const BTN_SIZE := 76.0
 const BTN_SAFE_MARGIN := 24.0  # margen a los bordes de la pantalla (safe area)
 ## Hueco entre los dos botones de una misma pareja (izq/dcha o disparo/salto):
-## una fracción pequeña del icono (antes casi el doble del icono, de ahí que
-## en la esquina derecha se vieran tan separados).
-const BTN_GAP := 26.0
-## La zona de toque real (invisible) mide BTN_SIZE * este factor: más grande
-## que el propio icono para que siga siendo fácil acertar aunque el dibujo se
-## haya encogido. Con SIZE=76/GAP=26 los centros quedan a 102 y cada zona mide
-## ~99 (76*1.3), así que las dos zonas de una pareja no llegan a solaparse
-## -importante en el par izquierda/derecha: si se tocaran, un dedo en el
-## límite podría activar los dos sentidos de movimiento a la vez-.
-const BTN_TOUCH_SCALE := 1.3
+## bastante mayor que el icono en sí para que cueste confundir uno con otro,
+## sin llegar al extremo de antes (78) que dejaba la esquina derecha muy
+## abierta.
+const BTN_GAP := 50.0
+## La zona de toque real (invisible) mide BTN_SIZE * este factor: bastante
+## más grande que el propio icono (que se queda pequeño y discreto) para que
+## siga siendo fácil acertar. Con SIZE=76/GAP=50 los centros quedan a 126 y
+## cada zona mide ~121.6 (76*1.6), así que las dos zonas de una pareja siguen
+## sin solaparse (~4.4px de aire) -importante en el par izquierda/derecha: si
+## se tocaran, un dedo en el límite podría activar los dos sentidos de
+## movimiento a la vez-.
+const BTN_TOUCH_SCALE := 1.6
 ## Transparencia del icono en reposo: semitransparente para que se vea el
 ## campo/los cabezudos por debajo; al pulsar sube la opacidad como feedback.
 const BTN_ALPHA_IDLE := 0.55
